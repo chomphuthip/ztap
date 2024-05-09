@@ -52,6 +52,10 @@ typedef BOOL(WINAPI* f_ReadFile)
 (HANDLE hFile, LPVOID lpBuffer, DWORD nNumberOfBytesToRead,
 	LPDWORD lpNumberOfBytesRead, LPOVERLAPPED lpOverlapped);
 
+typedef BOOL(WINAPI* f_WriteFile)
+(HANDLE hFile, LPCVOID lpBuffer, DWORD nNumberOfBytesToWrite,
+	LPDWORD lpNumberOfBytesWritten, LPOVERLAPPED lpOverlapped);
+
 typedef void(WINAPI* f_Sleep)
 (DWORD dwMilliseconds);
 
@@ -97,6 +101,14 @@ inline void* _memcpy(void* dest, void* src, size_t len) {
 	while (to_copy--) { *writing_head++ = *reading_head++; }
 	return dest;
 }
+
+struct headers_cache {
+	IMAGE_DOS_HEADER* dos_h;
+	IMAGE_NT_HEADERS* nt_h;
+	IMAGE_OPTIONAL_HEADER* opt_h;
+	IMAGE_FILE_HEADER* file_h;
+	IMAGE_DATA_DIRECTORY* dd;
+};
 
 enum _oneshot_mode_t {
 	DISK,
@@ -426,7 +438,6 @@ struct _pipe_params {
 	size_t file_len;
 };
 
-
 __declspec(safebuffers) DWORD WINAPI _pipe_loader(struct _pipe_params* params) {
 	
 	/* Setting up functions */
@@ -455,7 +466,7 @@ __declspec(safebuffers) DWORD WINAPI _pipe_loader(struct _pipe_params* params) {
 	file_loc = _VirtualAlloc((void*)0, params->file_len,
 		MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
 
-	_Sleep(1000);
+	_Sleep(10);
 
 	char* writing_head;
 	size_t total_read;
@@ -501,7 +512,6 @@ __declspec(safebuffers) DWORD WINAPI _pipe_loader(struct _pipe_params* params) {
 
 		section_header++;
 	}
-
 
 	/* Fixing relocations */
 	IMAGE_DOS_HEADER* img_dos_h;
@@ -705,5 +715,882 @@ int ztap_pipe(HANDLE proc_handle, char* buff, size_t buff_len) {
 	CloseHandle(read_handle);
 	CloseHandle(write_handle);
 	
+	return 0;
+}
+
+/* --- WARNING --- COMMANDER MODE --- POINT OF NO RETURN --- */
+
+struct _cmdr_params {
+	f_Sleep _Sleep;
+	f_ReadFile _ReadFile;
+	f_WriteFile _WriteFile;
+	f_VirtualFree _VirtualFree;
+	f_VirtualAlloc _VirtualAlloc;
+	f_LoadLibraryA _LoadLibraryA;
+	f_CreateThread _CreateThread;
+	f_VirtualProtect _VirtualProtect;
+	f_GetProcAddress _GetProcAddress;
+	f_RtlAddFunctionTable _RtlAddFunctionTable;
+
+	HANDLE read_handle;
+	HANDLE write_handle;
+};
+struct _cmdr_va_params_t {
+	LPVOID lpAddress;
+	SIZE_T dwSize;
+	DWORD flAllocationType;
+	DWORD flProtect;
+};
+
+struct _cmdr_vp_params_t {
+	LPVOID lpAddress;
+	SIZE_T dwSize;
+	DWORD flNewProtect;
+	PDWORD lpflOldProtect;
+};
+
+struct _cmdr_vf_params_t {
+	LPVOID lpAddress;
+	SIZE_T dwSize;
+	DWORD dwFreeType;
+};
+
+struct _cmdr_ct_params_t {
+	LPSECURITY_ATTRIBUTES lpThreadAttributes;
+	SIZE_T dwStackSize;
+	LPTHREAD_START_ROUTINE lpStartAddress;
+	LPVOID lpParameter;
+	DWORD dwCreationFlags;
+	LPDWORD lpThreadId;
+};
+
+struct _cmdr_wpm_params_t {
+	size_t buff_len;
+	char* dest;
+};
+
+struct _cmdr_rpm_params_t {
+	size_t buff_len;
+	char* src;
+};
+
+struct _cmdr_lla_params_t {
+	char lpLibFilename[255];
+};
+
+struct _cmdr_gpa_params_t {
+	HMODULE hModule;
+	char lpProcName[255];
+};
+
+struct _cmdr_ncc_params_t {
+	char* start;
+	uint64_t size;
+	uint64_t range;
+};
+
+struct _cmdr_fcc_params_t {
+	char* start;
+	uint64_t size;
+	char* end;
+};
+
+struct _cmdr_end_params_t {
+	uint32_t sanity;
+};
+
+
+enum _cmdr_msg_enum_t {
+	cmdr_wpm,
+	cmdr_rpm,
+	cmdr_va,
+	cmdr_vp,
+	cmdr_vf,
+	cmdr_lla,
+	cmdr_gpa,
+	cmdr_ct,
+	cmdr_ncc,
+	cmdr_fcc,
+	cmdr_end
+};
+
+struct _cmdr_msg_t {
+	enum _cmdr_msg_enum_t msg_enum;
+	union _params {
+		struct _cmdr_va_params_t _cmdr_va_params;
+		struct _cmdr_vp_params_t _cmdr_vp_params;
+		struct _cmdr_vf_params_t _cmdr_vf_params;
+		struct _cmdr_ct_params_t _cmdr_ct_params;
+		struct _cmdr_wpm_params_t _cmdr_wpm_params;
+		struct _cmdr_rpm_params_t _cmdr_rpm_params;
+		struct _cmdr_lla_params_t _cmdr_lla_params;
+		struct _cmdr_gpa_params_t _cmdr_gpa_params;
+		struct _cmdr_ncc_params_t _cmdr_ncc_params;
+		struct _cmdr_fcc_params_t _cmdr_fcc_params;
+		struct _cmdr_end_params_t _cmdr_end_params;
+
+	} params;
+};
+
+enum _cmdr_res_type_t {
+	error_res_t,
+	HANDLE_res_t,
+	BOOL_res_t,
+	DWORD_res_t,
+	FARPROC_res_t,
+	ptr_res_t
+};
+
+struct _cmdr_res_t {
+	enum _cmdr_res_type_t res_type;
+	union {
+		DWORD error;
+		HANDLE handle;
+		BOOL bool;
+		FARPROC farproc;
+		char* ptr;
+		DWORD dword;
+	} val ;
+};
+
+__declspec(safebuffers) 
+DWORD WINAPI _cmdr_thread(struct _cmdr_params* params) {
+
+	/* Setting up functions */
+	f_Sleep _Sleep;
+	f_ReadFile _ReadFile;
+	f_WriteFile _WriteFile;
+	f_VirtualFree _VirtualFree;
+	f_VirtualAlloc _VirtualAlloc;
+	f_LoadLibraryA _LoadLibraryA;
+	f_CreateThread _CreateThread;
+	f_VirtualProtect _VirtualProtect;
+	f_GetProcAddress _GetProcAddress;
+
+	_Sleep = params->_Sleep;
+	_ReadFile = params->_ReadFile;
+	_WriteFile = params->_WriteFile;
+	_VirtualFree = params->_VirtualFree;
+	_VirtualAlloc = params->_VirtualAlloc;
+	_LoadLibraryA = params->_LoadLibraryA;
+	_CreateThread = params->_CreateThread;
+	_VirtualProtect = params->_VirtualProtect;
+	_GetProcAddress = params->_GetProcAddress;
+
+	_Sleep(10);
+
+	struct _cmdr_msg_t msg;
+	struct _cmdr_res_t res;
+	size_t bytes_read;
+	size_t bytes_sent;
+
+	while (1) {
+		_ReadFile(params->read_handle, &msg, sizeof(msg),
+			&bytes_read, (void*)0);
+		switch (msg.msg_enum) {
+		case cmdr_wpm: {
+			size_t recv;
+			size_t total_recv;
+			char* writing_head;
+			struct _cmdr_wpm_params_t* wpm_params;
+
+			recv = 0;
+			total_recv = 0;
+			writing_head = wpm_params->dest;
+			wpm_params = &(msg.params._cmdr_wpm_params);
+
+			while (total_recv < wpm_params->buff_len) {
+				_ReadFile(
+					params->read_handle,
+					writing_head,
+					wpm_params->buff_len,
+					&recv,
+					(void*)0
+				);
+
+				total_recv += recv;
+				writing_head += recv;
+			}
+
+			res.res_type = BOOL_res_t;
+			res.val.bool = TRUE;
+			_WriteFile(params->write_handle, &res,
+				sizeof(res), &bytes_sent, (void*)0);
+			break;
+		}
+		case cmdr_rpm: {
+			size_t sent;
+			size_t total_sent;
+			char* reading_head;
+			struct _cmdr_rpm_params_t* rpm_params;
+
+			sent = 0;
+			total_sent = 0;
+			reading_head = rpm_params->src;
+			rpm_params = &(msg.params._cmdr_rpm_params);
+
+			while (total_sent < rpm_params->buff_len) {
+				_WriteFile(
+					params->read_handle,
+					reading_head,
+					rpm_params->buff_len,
+					&sent,
+					(void*)0
+				);
+
+				total_sent += sent;
+				reading_head += sent;
+			}
+
+			res.res_type = BOOL_res_t;
+			res.val.bool = TRUE;
+			_WriteFile(params->write_handle, &res,
+				sizeof(res), &bytes_sent, (void*)0);
+			break;
+		}
+		case cmdr_vf: {
+			BOOL good_free;
+			struct _cmdr_vf_params_t* vf_params;
+
+			vf_params = &(msg.params._cmdr_vf_params);
+			good_free = _VirtualFree(
+				vf_params->lpAddress,
+				vf_params->dwSize,
+				vf_params->dwFreeType
+			);
+
+			res.res_type = BOOL_res_t;
+			res.val.bool = good_free;
+			_WriteFile(params->write_handle, &res,
+				sizeof(res), &bytes_sent, (void*)0);
+			break;
+		}
+		case cmdr_va: {
+			char* buf;
+			struct _cmdr_va_params_t* va_params;
+
+			va_params = &(msg.params._cmdr_va_params);
+			buf = _VirtualAlloc(
+				va_params->lpAddress,
+				va_params->dwSize,
+				va_params->flAllocationType,
+				va_params->flProtect
+			);
+
+			res.res_type = ptr_res_t;
+			res.val.ptr = buf;
+			_WriteFile(params->write_handle, &res,
+				sizeof(res), &bytes_sent, (void*)0);
+			break;
+		}
+		case cmdr_vp: {
+			DWORD old_protect;
+			BOOL good_protect;
+			struct _cmdr_vp_params_t* vp_params;
+
+			vp_params = &(msg.params._cmdr_vp_params);
+			good_protect = _VirtualProtect(
+				vp_params->lpAddress,
+				vp_params->dwSize,
+				vp_params->flNewProtect,
+				&old_protect
+			);
+
+			if (good_protect) {
+				res.res_type = DWORD_res_t;
+				res.val.dword = old_protect;
+			}
+			else {
+				res.res_type = error_res_t;
+				res.val.ptr = good_protect;
+			}
+
+			_WriteFile(params->write_handle, &res,
+				sizeof(res), &bytes_sent, (void*)0);
+			break;
+		}
+		case cmdr_lla: {
+			HANDLE module_handle;
+			struct _cmdr_lla_params_t* lla_params;
+
+			lla_params = &(msg.params._cmdr_lla_params);
+			module_handle = _LoadLibraryA(
+				lla_params->lpLibFilename
+			);
+
+			res.res_type = HANDLE_res_t;
+			res.val.ptr = module_handle;
+			_WriteFile(params->write_handle, &res,
+				sizeof(res), &bytes_sent, (void*)0);
+			break;
+		}
+		case cmdr_ct: {
+			DWORD thread_id;
+			HANDLE thread_handle;
+			struct _cmdr_ct_params_t* ct_params;
+
+			ct_params = &(msg.params._cmdr_ct_params);
+			thread_handle = _CreateThread(
+				ct_params->lpThreadAttributes,
+				ct_params->dwStackSize,
+				ct_params->lpStartAddress,
+				ct_params->lpParameter,
+				ct_params->dwCreationFlags,
+				&thread_id
+			);
+
+			res.res_type = DWORD_res_t;
+			res.val.ptr = thread_id;
+			_WriteFile(params->write_handle, &res,
+				sizeof(res), &bytes_sent, (void*)0);
+			break;
+		}
+		case cmdr_gpa: {
+			FARPROC proc_addr;
+			struct _cmdr_gpa_params_t* vp_params;
+
+			vp_params = &(msg.params._cmdr_gpa_params);
+			proc_addr = _GetProcAddress(
+				vp_params->hModule,
+				vp_params->lpProcName
+			);
+
+			res.res_type = FARPROC_res_t;
+			res.val.ptr = proc_addr;
+			_WriteFile(params->write_handle, &res,
+				sizeof(res), &bytes_sent, (void*)0);
+			break;
+		}
+		case cmdr_ncc: {
+			char* end;
+			char* code_cave;
+			size_t dist_cleared;
+			struct _cmdr_ncc_params_t* ncc_params;
+
+			ncc_params = &(msg.params._cmdr_ncc_params);
+			code_cave = ncc_params->start;
+			end = code_cave + ncc_params->range;
+
+			dist_cleared = 0;
+			while (code_cave < end) {
+				if (*code_cave == 0xCC || *code_cave == 0x00)
+					dist_cleared++;
+				else
+					dist_cleared = 0;
+
+				if (dist_cleared >= ncc_params->size) break;
+
+				code_cave++;
+			}
+			if (code_cave == end) {
+				res.res_type = error_res_t;
+				res.val.dword = -1;
+			}
+			else {
+				res.res_type = ptr_res_t;
+				res.val.ptr = code_cave;
+			}
+
+			_WriteFile(params->write_handle, &res,
+				sizeof(res), &bytes_sent, (void*)0);
+			break;
+		}
+		case cmdr_fcc: {
+			char* end;
+			char* code_cave;
+			size_t dist_cleared;
+			struct _cmdr_fcc_params_t* fcc_params;
+
+			fcc_params = &(msg.params._cmdr_fcc_params);
+			code_cave = fcc_params->start;
+			end = fcc_params->end;
+
+			dist_cleared = 0;
+			while (code_cave < end) {
+				if (*code_cave == 0xCC || *code_cave == 0x00)
+					dist_cleared++;
+				else
+					dist_cleared = 0;
+
+				if (dist_cleared >= fcc_params->size) break;
+
+				code_cave++;
+			}
+
+			if (code_cave == end) {
+				res.res_type = error_res_t;
+				res.val.dword = -1;
+			}
+			else {
+				res.res_type = ptr_res_t;
+				res.val.ptr = code_cave;
+			}
+			_WriteFile(params->write_handle, &res,
+				sizeof(res), &bytes_sent, (void*)0);
+			break;
+		}
+		case cmdr_end: {
+			res.res_type = DWORD_res_t;
+			res.val.dword = 0;
+			_WriteFile(params->write_handle, &res,
+				sizeof(res), &bytes_sent, (void*)0);
+			return 0;
+		}
+		}
+
+		return 0;
+	}
+}
+
+void set_cmdr_funcs(struct _cmdr_params* params) {
+	params->_Sleep = Sleep;
+	params->_ReadFile = ReadFile;
+	params->_VirtualFree = VirtualFree;
+	params->_VirtualAlloc = VirtualAlloc;
+	params->_LoadLibraryA = LoadLibraryA;
+	params->_CreateThread = CreateThread;
+	params->_VirtualProtect = VirtualProtect;
+	params->_GetProcAddress = GetProcAddress;
+}
+
+struct _ztap_cmdr_pkg_t {
+	char code_buf[0x1000];
+	struct _cmdr_params params;
+};
+
+int ztap_cmdr_init(HANDLE proc_handle, struct ztap_handle_t** handle) {
+	HANDLE cmdr_write_handle;
+	HANDLE msg_read_handle;
+	BOOL piped;
+
+	piped = CreatePipe(&msg_read_handle, &cmdr_write_handle,
+		(void*)0, 0);
+	if (piped == FALSE) return -1;
+
+	HANDLE remote_recv_handle;
+	BOOL duplicated;
+	duplicated = DuplicateHandle(
+		GetCurrentProcess(),
+		msg_read_handle,
+		proc_handle,
+		&remote_recv_handle,
+		0,
+		TRUE,
+		DUPLICATE_SAME_ACCESS
+	);
+	if (!duplicated) return -2;
+
+	HANDLE res_write_handle;
+	HANDLE cmdr_read_handle;
+
+	piped = CreatePipe(&cmdr_read_handle, &res_write_handle,
+		(void*)0, 0);
+	if (piped == FALSE) return -1;
+
+	HANDLE remote_send_handle;
+	duplicated = DuplicateHandle(
+		GetCurrentProcess(),
+		res_write_handle,
+		proc_handle,
+		&remote_send_handle,
+		0,
+		TRUE,
+		DUPLICATE_SAME_ACCESS
+	);
+	if (!duplicated) return -2;
+
+	struct _cmdr_params params;
+	set_cmdr_funcs(&params);
+	params.read_handle = remote_recv_handle;
+	params.write_handle = remote_send_handle;
+
+	struct _ztap_cmdr_pkg_t* pkg;
+	pkg = calloc(1, sizeof(*pkg));
+	if (pkg == 0) return -3;
+
+	memcpy(&pkg->params, &params, sizeof(params));
+	memcpy(&pkg->code_buf, _cmdr_thread, 0x1000);
+
+	struct _ztap_cmdr_pkg_t* remote_pkg;
+	remote_pkg = VirtualAllocEx(proc_handle, (void*)0,
+		sizeof(*remote_pkg), MEM_COMMIT | MEM_RESERVE,
+		PAGE_EXECUTE_READWRITE);
+	if (remote_pkg == 0) return -4;
+
+	BOOL wrote_properly;
+	wrote_properly = WriteProcessMemory(proc_handle,
+		remote_pkg, pkg, sizeof(*pkg), (void*)0);
+	if (!wrote_properly) return -5;
+
+	HANDLE thread_handle;
+	thread_handle = CreateRemoteThread(proc_handle,
+		(void*)0, 0, remote_pkg->code_buf,
+		&remote_pkg->params, 0, 0);
+	if (thread_handle == NULL) return -6;
+
+	(*handle)->pipe_read = cmdr_read_handle;
+	(*handle)->pipe_write = cmdr_write_handle;
+	return 0;
+}
+
+BOOL ztap_cmdr_wpm(struct ztap_handle_t* handle,
+				   void* base_address,
+				   void* buffer,
+				   size_t size,
+				   size_t* out_size) {
+	struct _cmdr_msg_t msg;
+	struct _cmdr_wpm_params_t* params;
+
+	memset(&msg, 0, sizeof(msg));
+	msg.msg_enum = cmdr_wpm;
+	params = &msg.params._cmdr_wpm_params;
+	
+	params->dest = base_address;
+	params->buff_len = size;
+
+	size_t sent;
+	size_t total_sent;
+	char* reading_head;
+
+	WriteFile(handle->pipe_write, &msg,
+		sizeof(msg), &sent, (void*)0);
+
+	sent = 0;
+	total_sent = 0;
+	reading_head = buffer;
+	while (total_sent < size) {
+		WriteFile(handle->pipe_write, reading_head,
+			size, &sent, (void*)0);
+		total_sent += sent;
+		reading_head += sent;
+	}
+	*out_size = total_sent;
+	
+	size_t res_recvd;
+	struct _cmdr_res_t res;
+	ReadFile(handle->pipe_read, &res, sizeof(res),
+		&res_recvd, (void*)0);
+
+	return TRUE;
+}
+
+BOOL ztap_cmdr_rpm(struct ztap_handle_t* handle,
+				   void* base_address,
+				   void* buffer,
+				   size_t size,
+				   size_t* out_size) {
+	struct _cmdr_msg_t msg;
+	struct _cmdr_rpm_params_t* params;
+
+	memset(&msg, 0, sizeof(msg));
+	msg.msg_enum = cmdr_rpm;
+	params = &msg.params._cmdr_rpm_params;
+
+	params->src = base_address;
+	params->buff_len = size;
+
+	size_t sent;
+	size_t total_sent;
+	char* writing_head;
+
+	WriteFile(handle->pipe_write, &msg,
+		sizeof(msg), &sent, (void*)0);
+
+	sent = 0;
+	total_sent = 0;
+	writing_head = buffer;
+	while (total_sent < size) {
+		ReadFile(handle->pipe_read, writing_head,
+			size, &sent, (void*)0);
+		total_sent += sent;
+		writing_head += sent;
+	}
+	*out_size = total_sent;
+
+	size_t res_recvd;
+	struct _cmdr_res_t res;
+	ReadFile(handle->pipe_read, &res, sizeof(res),
+		&res_recvd, (void*)0);
+	return TRUE;
+
+}
+
+LPVOID ztap_cmdr_va(struct ztap_handle_t* handle,
+				  void* address,
+			 	  size_t size,
+				  uint32_t allocation_type,
+				  uint32_t  protect) {
+	struct _cmdr_msg_t msg;
+	struct _cmdr_va_params_t* params;
+
+	memset(&msg, 0, sizeof(msg));
+	msg.msg_enum = cmdr_va;
+	params = &msg.params._cmdr_va_params;
+
+	params->lpAddress = address;
+	params->dwSize = size;
+	params->flAllocationType = allocation_type;
+	params->flProtect = protect;
+
+	size_t sent;
+	size_t total_sent;
+	char* writing_head;
+
+	WriteFile(handle->pipe_write, &msg,
+		sizeof(msg), &sent, (void*)0);
+	
+	size_t res_recvd;
+	struct _cmdr_res_t res;
+	ReadFile(handle->pipe_read, &res, sizeof(res),
+		&res_recvd, (void*)0);
+	
+	return res.val.ptr;
+}
+
+BOOL ztap_cmdr_vp(struct ztap_handle_t* handle,
+				  void* address,
+				  size_t size,
+				  uint32_t new_protect,
+				  uint32_t* old_protect) {
+	struct _cmdr_msg_t msg;
+	struct _cmdr_vp_params_t* params;
+
+	memset(&msg, 0, sizeof(msg));
+	msg.msg_enum = cmdr_vp;
+	params = &msg.params._cmdr_vp_params;
+
+	params->lpAddress = address;
+	params->dwSize = size;
+	params->flNewProtect = new_protect;
+
+	size_t sent;
+	size_t total_sent;
+	char* writing_head;
+
+	WriteFile(handle->pipe_write, &msg,
+		sizeof(msg), &sent, (void*)0);
+
+	size_t res_recvd;
+	struct _cmdr_res_t res;
+	ReadFile(handle->pipe_read, &res, sizeof(res),
+		&res_recvd, (void*)0);
+
+	if (res.res_type == DWORD_res_t) {
+		*old_protect = res.val.dword;
+		return TRUE;
+	}
+	else {
+		handle->last_error = res.val.dword;
+		return FALSE;
+	}
+}
+
+BOOL ztap_cmdr_vf(struct ztap_handle_t* handle,
+				  void* address,
+				  size_t size,
+				  uint32_t free_type) {
+	struct _cmdr_msg_t msg;
+	struct _cmdr_vf_params_t* params;
+
+	memset(&msg, 0, sizeof(msg));
+	msg.msg_enum = cmdr_vf;
+	params = &msg.params._cmdr_vf_params;
+
+	params->lpAddress = address;
+	params->dwSize = size;
+	params->dwFreeType = free_type;
+
+	size_t sent;
+	size_t total_sent;
+	char* writing_head;
+
+	WriteFile(handle->pipe_write, &msg,
+		sizeof(msg), &sent, (void*)0);
+
+	size_t res_recvd;
+	struct _cmdr_res_t res;
+	ReadFile(handle->pipe_read, &res, sizeof(res),
+		&res_recvd, (void*)0);
+
+	return res.val.bool;
+}
+
+HMODULE ztap_cmdr_lla(struct ztap_handle_t* handle,
+					  char* lib_name) {
+	struct _cmdr_msg_t msg;
+	struct _cmdr_lla_params_t* params;
+
+	memset(&msg, 0, sizeof(msg));
+	msg.msg_enum = cmdr_lla;
+	params = &msg.params._cmdr_lla_params;
+
+	strcpy_s(&params->lpLibFilename, 255, lib_name);
+
+	size_t sent;
+	size_t total_sent;
+	char* writing_head;
+
+	WriteFile(handle->pipe_write, &msg,
+		sizeof(msg), &sent, (void*)0);
+
+	size_t res_recvd;
+	struct _cmdr_res_t res;
+	ReadFile(handle->pipe_read, &res, sizeof(res),
+		&res_recvd, (void*)0);
+
+	return res.val.handle;
+}
+
+FARPROC ztap_cmdr_gpa(struct ztap_handle_t* handle,
+				      HMODULE module_handle,
+				      char* name) {
+	struct _cmdr_msg_t msg;
+	struct _cmdr_gpa_params_t* params;
+
+	memset(&msg, 0, sizeof(msg));
+	msg.msg_enum = cmdr_gpa;
+	params = &msg.params._cmdr_gpa_params;
+
+	params->hModule = module_handle;
+	strcpy_s(&params->lpProcName, 255, name);
+
+	size_t sent;
+	size_t total_sent;
+	char* writing_head;
+
+	WriteFile(handle->pipe_write, &msg,
+		sizeof(msg), &sent, (void*)0);
+
+	size_t res_recvd;
+	struct _cmdr_res_t res;
+	ReadFile(handle->pipe_read, &res, sizeof(res),
+		&res_recvd, (void*)0);
+
+	return res.val.farproc;
+}
+
+void ztap_cmdr_ct(struct ztap_handle_t* handle,
+				 SECURITY_ATTRIBUTES* thread_attributes,
+				 size_t stack_size,
+				 void* start_address,
+				 void* parameter,
+				 DWORD creation_flags,
+				 DWORD* thread_id) {
+	struct _cmdr_msg_t msg;
+	struct _cmdr_ct_params_t* params;
+
+	memset(&msg, 0, sizeof(msg));
+	msg.msg_enum = cmdr_ct;
+	params = &msg.params._cmdr_ct_params;
+
+	params->lpThreadAttributes = thread_attributes;
+	params->dwStackSize = stack_size;
+	params->lpStartAddress = start_address;
+	params->lpParameter = parameter;
+	params->dwCreationFlags = creation_flags;
+
+	size_t sent;
+	size_t total_sent;
+	char* writing_head;
+
+	WriteFile(handle->pipe_write, &msg,
+		sizeof(msg), &sent, (void*)0);
+
+	size_t res_recvd;
+	struct _cmdr_res_t res;
+	ReadFile(handle->pipe_read, &res, sizeof(res),
+		&res_recvd, (void*)0);
+
+	*thread_id = res.val.dword;
+}
+
+int ztap_cmdr_ncc(struct ztap_handle_t* handle,
+				  char* start,
+				  uint64_t size,
+				  uint64_t range,
+				  char** code_cave_ptr) {
+	struct _cmdr_msg_t msg;
+	struct _cmdr_ncc_params_t* params;
+
+	memset(&msg, 0, sizeof(msg));
+	msg.msg_enum = cmdr_ncc;
+	params = &msg.params._cmdr_ncc_params;
+
+	params->start = start;
+	params->size = size;
+	params->range = range;
+
+	size_t sent;
+	size_t total_sent;
+	char* writing_head;
+
+	WriteFile(handle->pipe_write, &msg,
+		sizeof(msg), &sent, (void*)0);
+
+	size_t res_recvd;
+	struct _cmdr_res_t res;
+	ReadFile(handle->pipe_read, &res, sizeof(res),
+		&res_recvd, (void*)0);
+
+	if (res.res_type == error_res_t) return -1;
+	
+	*code_cave_ptr = res.val.ptr;
+	return 0;
+}
+
+int ztap_cmdr_fcc(struct ztap_handle_t* handle,
+				  char* start,
+				  uint64_t size,
+				  char* end,
+				  char** code_cave_ptr) {
+	struct _cmdr_msg_t msg;
+	struct _cmdr_fcc_params_t* params;
+
+	memset(&msg, 0, sizeof(msg));
+	msg.msg_enum = cmdr_fcc;
+	params = &msg.params._cmdr_fcc_params;
+
+	params->start = start;
+	params->size = size;
+	params->end = end;
+
+	size_t sent;
+	size_t total_sent;
+	char* writing_head;
+
+	WriteFile(handle->pipe_write, &msg,
+		sizeof(msg), &sent, (void*)0);
+
+	size_t res_recvd;
+	struct _cmdr_res_t res;
+	ReadFile(handle->pipe_read, &res, sizeof(res),
+		&res_recvd, (void*)0);
+
+	if (res.res_type == error_res_t) return -1;
+
+	*code_cave_ptr = res.val.ptr;
+	return 0;
+}
+
+
+int ztap_cmdr_end(struct ztap_handle_t* handle) {
+	struct _cmdr_msg_t msg;
+	struct _cmdr_fcc_params_t* params;
+
+	memset(&msg, 0, sizeof(msg));
+	msg.msg_enum = cmdr_end;
+	params = &msg.params._cmdr_end_params;
+
+	size_t sent;
+	size_t total_sent;
+	char* writing_head;
+
+	WriteFile(handle->pipe_write, &msg,
+		sizeof(msg), &sent, (void*)0);
+
+	size_t res_recvd;
+	struct _cmdr_res_t res;
+	ReadFile(handle->pipe_read, &res, sizeof(res),
+		&res_recvd, (void*)0);
 	return 0;
 }
