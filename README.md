@@ -10,4 +10,4 @@ Features Roadmap
 * ✔ Injection using file handle
 * ✔ Reflective Injection
 * ✔ Pipe-based Injection
-* Commander Mode
+* ✔ Commander Mode
