@@ -3,6 +3,7 @@
 #define _WIN32_LEAN_AND_MEAN
 #include<Windows.h>
 
+#define _ztap_cringe_overoptimization
 #ifdef _ztap_cringe_overoptimization
 #include <emmintrin.h>
 #endif
@@ -72,8 +73,9 @@ inline void* _memcpy(void* dest, void* src, size_t len) {
 
 	/* if can be aligned eventually */
 	if (offset_diff & 0xf == 0) {
-		while (!((uintptr_t)reading_head & 0xf &&
-			(uintptr_t)writing_head & 0xf))
+		int until_good = offset_diff;
+
+		while (until_good--)
 			*writing_head++ = *reading_head++;
 
 		/* aligned now */
