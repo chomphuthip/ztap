@@ -7,7 +7,7 @@ ztap uses only
 * and one `CreateRemoteThread` call
 
 Features Roadmap
-* ✔ Injection using file
+* ✔ Injection using file handle
 * ✔ Reflective Injection
 * Pipe-based Injection
 * Commander Mode
