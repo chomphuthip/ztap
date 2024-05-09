@@ -8,6 +8,6 @@ ztap uses only
 
 Features Roadmap
 * ✔ Injection using file
-* Reflective Injection
+* ✔ Reflective Injection
 * Pipe-based Injection
 * Commander Mode
