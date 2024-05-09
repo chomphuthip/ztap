@@ -3,7 +3,6 @@
 #define _WIN32_LEAN_AND_MEAN
 #include<Windows.h>
 
-#define _ztap_cringe_overoptimization
 #ifdef _ztap_cringe_overoptimization
 #include <emmintrin.h>
 #endif
@@ -48,6 +47,13 @@ typedef BOOL(WINAPI* f_DLL_ENTRY_POINT)
 typedef BOOL(WINAPIV* f_RtlAddFunctionTable)
 (PRUNTIME_FUNCTION FunctionTable,
 	DWORD EntryCount, DWORD64 BaseAddress);
+
+typedef BOOL(WINAPI* f_ReadFile)
+(HANDLE hFile, LPVOID lpBuffer, DWORD nNumberOfBytesToRead,
+	LPDWORD lpNumberOfBytesRead, LPOVERLAPPED lpOverlapped);
+
+typedef void(WINAPI* f_Sleep)
+(DWORD dwMilliseconds);
 
 inline void* _memcpy(void* dest, void* src, size_t len) {
 	char* reading_head;
@@ -317,6 +323,7 @@ struct _ztap_disk_pkg_t {
 	struct _oneshot_params params;
 };
 
+
 int ztap_disk(HANDLE proc_handle, HANDLE file_handle) {
 	HANDLE remote_handle;
 	BOOL duplicated;
@@ -401,5 +408,302 @@ int ztap_buff(HANDLE proc_handle, char* buff, size_t buff_len) {
 		&remote_pkg->params, 0, 0);
 	if (thread_handle == NULL) return -4;
 
+	return 0;
+}
+
+struct _pipe_params {
+	f_Sleep _Sleep;
+	f_ReadFile _ReadFile;
+	f_VirtualFree _VirtualFree;
+	f_VirtualAlloc _VirtualAlloc;
+	f_LoadLibraryA _LoadLibraryA;
+	f_CreateThread _CreateThread;
+	f_VirtualProtect _VirtualProtect;
+	f_GetProcAddress _GetProcAddress;
+	f_RtlAddFunctionTable _RtlAddFunctionTable;
+
+	HANDLE read_handle;
+	size_t file_len;
+};
+
+
+__declspec(safebuffers) DWORD WINAPI _pipe_loader(struct _pipe_params* params) {
+	
+	/* Setting up functions */
+	f_Sleep _Sleep;
+	f_ReadFile _ReadFile;
+	f_VirtualFree _VirtualFree;
+	f_VirtualAlloc _VirtualAlloc;
+	f_LoadLibraryA _LoadLibraryA;
+	f_CreateThread _CreateThread;
+	f_VirtualProtect _VirtualProtect;
+	f_GetProcAddress _GetProcAddress;
+	f_RtlAddFunctionTable _RtlAddFunctionTable;
+
+	_Sleep = params->_Sleep;
+	_ReadFile = params->_ReadFile;
+	_VirtualFree = params->_VirtualFree;
+	_VirtualAlloc = params->_VirtualAlloc;
+	_LoadLibraryA = params->_LoadLibraryA;
+	_CreateThread = params->_CreateThread;
+	_VirtualProtect = params->_VirtualProtect;
+	_GetProcAddress = params->_GetProcAddress;
+	_RtlAddFunctionTable = params->_RtlAddFunctionTable;
+
+	/* Read file from pipe */
+	char* file_loc;
+	file_loc = _VirtualAlloc((void*)0, params->file_len,
+		MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+
+	_Sleep(1000);
+
+	char* writing_head;
+	size_t total_read;
+	size_t read;
+
+	total_read = 0;
+	writing_head = file_loc;
+	while (total_read < params->file_len) {
+		_ReadFile(params->read_handle, writing_head, 
+			params->file_len, &read, (void*)0);
+		
+		total_read += read;
+		writing_head += read;
+	}
+
+	/* Writing the image to the correct locations */
+	IMAGE_DOS_HEADER* file_dos_h;
+	IMAGE_NT_HEADERS* file_nt_h;
+	IMAGE_OPTIONAL_HEADER* file_opt_h;
+	IMAGE_FILE_HEADER* file_file_h;
+
+	file_dos_h = file_loc;
+	file_nt_h = file_loc + file_dos_h->e_lfanew;
+	file_opt_h = &file_nt_h->OptionalHeader;
+	file_file_h = &file_nt_h->FileHeader;
+
+	char* image_base;
+	image_base = _VirtualAlloc((void*)0, file_opt_h->SizeOfImage,
+		MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+
+	_memcpy(image_base, file_loc, 0x1000);
+
+	IMAGE_SECTION_HEADER* section_header;
+	section_header = IMAGE_FIRST_SECTION(file_nt_h);
+
+	for (uint32_t i = 0; i < file_file_h->NumberOfSections; i++) {
+		if (!section_header->SizeOfRawData)
+			continue;
+
+		_memcpy(image_base + section_header->VirtualAddress,
+			file_loc + section_header->PointerToRawData,
+			section_header->SizeOfRawData);
+
+		section_header++;
+	}
+
+
+	/* Fixing relocations */
+	IMAGE_DOS_HEADER* img_dos_h;
+	IMAGE_NT_HEADERS* img_nt_h;
+	IMAGE_OPTIONAL_HEADER* img_opt_h;
+	IMAGE_FILE_HEADER* img_img_h;
+
+	img_dos_h = image_base;
+	img_nt_h = image_base + img_dos_h->e_lfanew;
+	img_opt_h = &img_nt_h->OptionalHeader;
+	img_img_h = &img_nt_h->FileHeader;
+
+	IMAGE_DATA_DIRECTORY* dd;
+	dd = img_opt_h->DataDirectory;
+
+	int delta;
+	IMAGE_BASE_RELOCATION* reloc_entry;
+	delta = image_base - img_opt_h->ImageBase;
+	reloc_entry = &dd[IMAGE_DIRECTORY_ENTRY_BASERELOC];
+
+	IMAGE_BASE_RELOCATION* reloc_data;
+	reloc_data = image_base + reloc_entry->VirtualAddress;
+
+	while (reloc_data->VirtualAddress) {
+		if (reloc_data->SizeOfBlock >= sizeof(IMAGE_BASE_RELOCATION)) {
+			int count;
+			count = (reloc_data->SizeOfBlock -
+				sizeof(IMAGE_BASE_RELOCATION)) / sizeof(WORD);
+
+			uint16_t* list;
+			list = reloc_data + 1;
+
+			for (int i = 0; i < count; i++) {
+				if (!list[i]) continue;
+
+				uint32_t* offset_ptr;
+				offset_ptr = image_base +
+					(reloc_data->VirtualAddress +
+						(list[i] & 0xfff));
+
+				*offset_ptr += delta;
+			}
+		}
+
+		reloc_data = (char*)reloc_data + reloc_data->SizeOfBlock;
+	}
+
+	/* Fixing imports */
+	IMAGE_DATA_DIRECTORY* import_dir_entry;
+	IMAGE_IMPORT_DESCRIPTOR* import_descriptor;
+
+	import_dir_entry = &dd[IMAGE_DIRECTORY_ENTRY_IMPORT];
+	import_descriptor = image_base + import_dir_entry->VirtualAddress;
+
+	while (import_descriptor->Name) {
+		char* lib_name;
+		lib_name = image_base + import_descriptor->Name;
+
+		HINSTANCE dll_handle;
+		dll_handle = _LoadLibraryA(lib_name);
+
+		uint64_t* thunk_ref;
+		uint64_t* func_ref;
+
+		thunk_ref = image_base + import_descriptor->OriginalFirstThunk;
+		func_ref = image_base + import_descriptor->FirstThunk;
+		if (!thunk_ref) thunk_ref = func_ref;
+
+		for (; *thunk_ref; thunk_ref++, func_ref++) {
+			if (IMAGE_SNAP_BY_ORDINAL(*thunk_ref))
+				*func_ref = _GetProcAddress(dll_handle,
+					(char*)(*thunk_ref & 0xfff));
+			else
+				*func_ref = _GetProcAddress(dll_handle,
+					((IMAGE_IMPORT_BY_NAME*)
+						(image_base + (*thunk_ref)))->Name);
+		}
+
+		import_descriptor++;
+	}
+
+	/* Calling TLS callbacks */
+
+	IMAGE_DATA_DIRECTORY* tls_entry;
+	tls_entry = &dd[IMAGE_DIRECTORY_ENTRY_TLS];
+
+	if (tls_entry->Size) {
+		IMAGE_TLS_DIRECTORY* tls_dir;
+		PIMAGE_TLS_CALLBACK* callback;
+
+		tls_dir = image_base + tls_entry->VirtualAddress;
+		callback = tls_dir->AddressOfCallBacks;
+		for (; callback && *callback; callback++) {
+			(*callback)(image_base, DLL_PROCESS_ATTACH, (void*)0);
+		}
+	}
+
+	/* Loading exceptions */
+	IMAGE_DATA_DIRECTORY* seh_entry;
+	seh_entry = &dd[IMAGE_DIRECTORY_ENTRY_EXCEPTION];
+
+	if (seh_entry->Size) {
+		_RtlAddFunctionTable(
+			image_base + seh_entry->VirtualAddress,
+			seh_entry->Size / sizeof(IMAGE_RUNTIME_FUNCTION_ENTRY),
+			image_base);
+	}
+
+	f_DLL_ENTRY_POINT _entry;
+	_entry = image_base + img_opt_h->AddressOfEntryPoint;
+
+	_entry(image_base, DLL_PROCESS_ATTACH, (void*)0);
+
+	return 0;
+}
+
+void set_pipe_funcs(struct _pipe_params* params) {
+	params->_Sleep = Sleep;
+	params->_ReadFile = ReadFile;
+	params->_VirtualFree = VirtualFree;
+	params->_VirtualAlloc = VirtualAlloc;
+	params->_LoadLibraryA = LoadLibraryA;
+	params->_CreateThread = CreateThread;
+	params->_VirtualProtect = VirtualProtect;
+	params->_GetProcAddress = GetProcAddress;
+	params->_RtlAddFunctionTable = RtlAddFunctionTable;
+}
+
+struct _ztap_pipe_pkg_t {
+	char code_buf[0x1000];
+	struct _pipe_params params;
+};
+
+int ztap_pipe(HANDLE proc_handle, char* buff, size_t buff_len) {
+	HANDLE write_handle;
+	HANDLE read_handle;
+	BOOL piped;
+	
+	piped = CreatePipe(&read_handle, &write_handle, (void*)0, 0);
+	if (piped == FALSE) return -1;
+
+	HANDLE remote_handle;
+	BOOL duplicated;
+	duplicated = DuplicateHandle(
+		GetCurrentProcess(),
+		read_handle,
+		proc_handle,
+		&remote_handle,
+		0,
+		TRUE,
+		DUPLICATE_SAME_ACCESS
+	);
+	if (!duplicated) return -2;
+
+	struct _pipe_params params;
+	set_pipe_funcs(&params);
+	params.read_handle = remote_handle;
+	params.file_len = buff_len;
+
+	struct _ztap_pipe_pkg_t* pkg;
+	pkg = calloc(1, sizeof(*pkg));
+	if (pkg == 0) return -3;
+
+	memcpy(&pkg->params, &params, sizeof(params));
+	memcpy(&pkg->code_buf, _pipe_loader, 0x1000);
+
+	struct _ztap_disk_pkg_t* remote_pkg;
+	remote_pkg = VirtualAllocEx(proc_handle, (void*)0,
+		sizeof(*remote_pkg), MEM_COMMIT | MEM_RESERVE,
+		PAGE_EXECUTE_READWRITE);
+	if (remote_pkg == 0) return -4;
+
+	BOOL wrote_properly;
+	wrote_properly = WriteProcessMemory(proc_handle,
+		remote_pkg, pkg, sizeof(*pkg), (void*)0);
+	if (!wrote_properly) return -5;
+
+	HANDLE thread_handle;
+	thread_handle = CreateRemoteThread(proc_handle,
+		(void*)0, 0, remote_pkg->code_buf,
+		&remote_pkg->params, 0, 0);
+	if (thread_handle == NULL) return -6;
+
+	char* writing_head;
+	size_t total_sent;
+	size_t sent;
+
+	total_sent = 0;
+	writing_head = buff;
+	while (total_sent < buff_len) {
+		WriteFile(write_handle,
+			writing_head,
+			buff_len,
+			&sent,
+			NULL
+		);
+		total_sent += sent;
+		writing_head += sent;
+	}
+
+	CloseHandle(read_handle);
+	CloseHandle(write_handle);
+	
 	return 0;
 }
