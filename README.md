@@ -9,5 +9,5 @@ ztap uses only
 Features Roadmap
 * ✔ Injection using file handle
 * ✔ Reflective Injection
-* Pipe-based Injection
+* ✔ Pipe-based Injection
 * Commander Mode
