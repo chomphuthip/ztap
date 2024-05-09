@@ -362,3 +362,44 @@ int ztap_disk(HANDLE proc_handle, HANDLE file_handle) {
 
 	return 0;
 }
+
+struct _ztap_buff_pkg_t {
+	char code_buf[0x1000];
+	struct _oneshot_params params;
+	
+	char padding[0xf];
+};
+
+int ztap_buff(HANDLE proc_handle, char* buff, size_t buff_len) {
+	struct _ztap_buff_pkg_t* remote_pkg;
+	remote_pkg = VirtualAllocEx(proc_handle, (void*)0,
+		sizeof(*remote_pkg) + buff_len, MEM_COMMIT | MEM_RESERVE,
+		PAGE_EXECUTE_READWRITE);
+	if (remote_pkg == 0) return -1;
+
+	struct _oneshot_params params;
+	set_oneshot_funcs(&params);
+	params.mode = BUFF;
+	params.src.file_loc = (uintptr_t)remote_pkg + sizeof(*remote_pkg);
+
+	struct _ztap_buff_pkg_t* pkg;
+	pkg = calloc(1, sizeof(*pkg) + buff_len);
+	if (pkg == 0) return -2;
+
+	memcpy(&pkg->params, &params, sizeof(params));
+	memcpy(&pkg->code_buf, _oneshot_loader, 0x1000);
+	memcpy((uintptr_t)pkg + sizeof(*pkg), buff, buff_len);
+
+	BOOL wrote_properly;
+	wrote_properly = WriteProcessMemory(proc_handle,
+		remote_pkg, pkg, sizeof(*pkg) + buff_len, (void*)0);
+	if (!wrote_properly) return -3;
+
+	HANDLE thread_handle;
+	thread_handle = CreateRemoteThread(proc_handle,
+		(void*)0, 0, remote_pkg->code_buf,
+		&remote_pkg->params, 0, 0);
+	if (thread_handle == NULL) return -4;
+
+	return 0;
+}

@@ -15,9 +15,21 @@
 
 int ztap_disk(HANDLE proc_handle, HANDLE file_handle);
 
-int ztap_buff(HANDLE proc_handle, char* buff, size_t len);
+/*
+	Writes the raw PE file to the target process.
+	Creates a loader thread in the target process.
+	Loader thread maps the PE file from memory.
 
-int ztap_pipe(HANDLE proc_handle, char* buff, size_t len);
+	Return values:
+		0: Success
+		1: Couldn't allocate memory locally
+		2: Couldn't allocate memory in target process
+		3: Couldn't write to memory in target process
+		4: Couldn't start thread in target process
+*/
+int ztap_buff(HANDLE proc_handle, char* buff, size_t buff_len);
+
+int ztap_pipe(HANDLE proc_handle, char* buff, size_t buff_len);
 
 
 //struct ztap_handle_t {
