@@ -2,7 +2,10 @@
 
 #define _WIN32_LEAN_AND_MEAN
 #include<Windows.h>
+
+#ifdef _ztap_cringe_overoptimization
 #include <emmintrin.h>
+#endif
 
 #include "ztap.h"
 
@@ -54,7 +57,7 @@ inline void* _memcpy(void* dest, void* src, size_t len) {
 	writing_head = dest;
 	to_copy = len;
 
-#ifdef _cringe_overoptimization
+#ifdef _ztap_cringe_overoptimization
 	/* 
 		check if reading and writing head could both be aligned
 			on a 16 byte boundary at some point
@@ -65,10 +68,10 @@ inline void* _memcpy(void* dest, void* src, size_t len) {
 	uintptr_t write_dist_from_16b = (uintptr_t)writing_head & 0xf;
 
 	/* check the distance in offsets */
-	uintptr_t offset_diff = offset1 - offset2;
+	uintptr_t offset_diff = read_dist_from_16b - write_dist_from_16b;
 
 	/* if can be aligned eventually */
-	if (offset_diff & 0f == 0) {
+	if (offset_diff & 0xf == 0) {
 		while (!((uintptr_t)reading_head & 0xf &&
 			(uintptr_t)writing_head & 0xf))
 			*writing_head++ = *reading_head++;
