@@ -123,6 +123,46 @@ int pipe(HANDLE proc_handle, HANDLE file_handle) {
 	}
 }
 
+int cmdr(HANDLE proc_handle, HANDLE file_handle) {
+	struct ztap_handle_t* handle;
+	handle = calloc(1, sizeof(*handle));
+
+	ztap_cmdr_init(proc_handle, handle);
+	CloseHandle(proc_handle);
+
+	HANDLE file_map;
+	file_map = CreateFileMapping(file_handle,
+		NULL, PAGE_READONLY, 0, 0, NULL);
+
+	if (file_map == 0) {
+		perror("Could't create file mapping\n");
+		return -1;
+	}
+
+	char* file_view;
+	file_view = MapViewOfFile(file_map, FILE_MAP_READ, 0, 0, 0);
+
+	int64_t file_len;
+	GetFileSizeEx(file_handle, &file_len);
+
+	size_t out_len;
+	char* file_loc;
+	file_loc = ztap_cmdr_va(handle, (void*)0, file_len,
+		MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+	ztap_cmdr_wpm(handle, file_loc, file_view, file_len, &out_len);
+	
+	char* image_base;
+	ztap_cmdr_mi(handle, file_loc, &image_base);
+	CloseHandle(file_handle);
+
+	ztap_cmdr_fr(handle, image_base);
+	ztap_cmdr_fi(handle, image_base);
+	ztap_cmdr_tls(handle, image_base);
+	ztap_cmdr_seh(handle, image_base);
+	ztap_cmdr_call(handle, image_base);
+	return 0;
+}
+
 
 int main(int argc, char** argv) {
 	long proc_id;
@@ -171,5 +211,5 @@ int main(int argc, char** argv) {
 	HANDLE proc_handle;
 	proc_handle = OpenProcess(PROCESS_ALL_ACCESS, FALSE, proc_id);
 
-	return pipe(proc_handle, file_handle);
+	return cmdr(proc_handle, file_handle);
 }
