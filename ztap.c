@@ -2,6 +2,7 @@
 
 #define _WIN32_LEAN_AND_MEAN
 #include<Windows.h>
+#include<winternl.h>
 
 #ifdef _ztap_cringe_overoptimization
 #include <emmintrin.h>
@@ -58,6 +59,7 @@ typedef BOOL(WINAPI* f_WriteFile)
 
 typedef void(WINAPI* f_Sleep)
 (DWORD dwMilliseconds);
+
 
 inline void* _memcpy(void* dest, void* src, size_t len) {
 	char* reading_head;
@@ -250,22 +252,20 @@ __forceinline void call_tls_callbacks(char* image_base) {
 	IMAGE_DATA_DIRECTORY* tls_entry;
 	tls_entry = &dd[IMAGE_DIRECTORY_ENTRY_TLS];
 
-	int delta;
-	IMAGE_BASE_RELOCATION* reloc_entry;
-	delta = image_base - img_opt_h->ImageBase;
-	reloc_entry = &dd[IMAGE_DIRECTORY_ENTRY_BASERELOC];
+	if (!tls_entry->Size) return;
 
-	if (tls_entry->Size) {
-		IMAGE_TLS_DIRECTORY* tls_dir;
-		PIMAGE_TLS_CALLBACK* callback;
-		PIMAGE_TLS_CALLBACK callback_rebased;
+	IMAGE_TLS_DIRECTORY* tls_dir;
+	tls_dir = image_base + tls_entry->VirtualAddress;
+		
+	uintptr_t offset_from_image_base;
+	PIMAGE_TLS_CALLBACK* callback;
+		
+	offset_from_image_base = img_opt_h->ImageBase -
+		tls_dir->AddressOfCallBacks;
+	callback = offset_from_image_base + image_base;
 
-		tls_dir = image_base + tls_entry->VirtualAddress;
-		callback = tls_dir->AddressOfCallBacks;
-		for (; callback && *callback; callback++) {
-			callback_rebased = (char*)*callback + delta;
-			(callback_rebased)(image_base, DLL_PROCESS_ATTACH, (void*)0);
-		}
+	for (; callback && *callback; callback++) {
+		(*callback)(image_base, DLL_PROCESS_ATTACH, (void*)0);
 	}
 }
 
@@ -457,6 +457,7 @@ int ztap_disk(HANDLE proc_handle, HANDLE file_handle) {
 		&remote_pkg->params, 0, 0);
 	if (thread_handle == NULL) return -5;
 
+	free(pkg);
 	return 0;
 }
 
@@ -498,6 +499,7 @@ int ztap_buff(HANDLE proc_handle, char* buff, size_t buff_len) {
 		&remote_pkg->params, 0, 0);
 	if (thread_handle == NULL) return -4;
 
+	free(pkg);
 	return 0;
 }
 
@@ -659,6 +661,7 @@ int ztap_pipe(HANDLE proc_handle, char* buff, size_t buff_len) {
 	CloseHandle(read_handle);
 	CloseHandle(write_handle);
 	
+	free(pkg);
 	return 0;
 }
 
@@ -739,6 +742,30 @@ struct _cmdr_fcc_params_t {
 	char* end;
 };
 
+struct _cmdr_mi_params_t {
+	char* file_loc;
+};
+
+struct _cmdr_fr_params_t {
+	char* image_base;
+};
+
+struct _cmdr_fi_params_t {
+	char* image_base;
+};
+
+struct _cmdr_tls_params_t {
+	char* image_base;
+};
+
+struct _cmdr_seh_params_t {
+	char* image_base;
+};
+
+struct _cmdr_call_params_t {
+	char* image_base;
+};
+
 struct _cmdr_end_params_t {
 	uint32_t sanity;
 };
@@ -755,6 +782,12 @@ enum _cmdr_msg_enum_t {
 	cmdr_ct,
 	cmdr_ncc,
 	cmdr_fcc,
+	cmdr_mi,
+	cmdr_fr,
+	cmdr_fi,
+	cmdr_tls,
+	cmdr_seh,
+	cmdr_call,
 	cmdr_end
 };
 
@@ -771,6 +804,12 @@ struct _cmdr_msg_t {
 		struct _cmdr_gpa_params_t _cmdr_gpa_params;
 		struct _cmdr_ncc_params_t _cmdr_ncc_params;
 		struct _cmdr_fcc_params_t _cmdr_fcc_params;
+		struct _cmdr_mi_params_t _cmdr_mi_params;
+		struct _cmdr_fr_params_t _cmdr_fr_params;
+		struct _cmdr_fi_params_t _cmdr_fi_params;
+		struct _cmdr_tls_params_t _cmdr_tls_params;
+		struct _cmdr_seh_params_t _cmdr_seh_params;
+		struct _cmdr_call_params_t _cmdr_call_params;
 		struct _cmdr_end_params_t _cmdr_end_params;
 
 	} params;
@@ -810,6 +849,7 @@ DWORD WINAPI _cmdr_thread(struct _cmdr_params* params) {
 	f_CreateThread _CreateThread;
 	f_VirtualProtect _VirtualProtect;
 	f_GetProcAddress _GetProcAddress;
+	f_RtlAddFunctionTable _RtlAddFunctionTable;
 
 	_Sleep = params->_Sleep;
 	_ReadFile = params->_ReadFile;
@@ -820,6 +860,7 @@ DWORD WINAPI _cmdr_thread(struct _cmdr_params* params) {
 	_CreateThread = params->_CreateThread;
 	_VirtualProtect = params->_VirtualProtect;
 	_GetProcAddress = params->_GetProcAddress;
+	_RtlAddFunctionTable = params->_RtlAddFunctionTable ;
 
 	_Sleep(10);
 
@@ -838,10 +879,10 @@ DWORD WINAPI _cmdr_thread(struct _cmdr_params* params) {
 			char* writing_head;
 			struct _cmdr_wpm_params_t* wpm_params;
 
-			recv = 0;
-			total_recv = 0;
-			writing_head = wpm_params->dest;
 			wpm_params = &(msg.params._cmdr_wpm_params);
+			writing_head = wpm_params->dest;
+			total_recv = 0;
+			recv = 0;
 
 			while (total_recv < wpm_params->buff_len) {
 				_ReadFile(
@@ -858,8 +899,6 @@ DWORD WINAPI _cmdr_thread(struct _cmdr_params* params) {
 
 			res.res_type = BOOL_res_t;
 			res.val.bool = TRUE;
-			_WriteFile(params->write_handle, &res,
-				sizeof(res), &bytes_sent, (void*)0);
 			break;
 		}
 		case cmdr_rpm: {
@@ -868,10 +907,10 @@ DWORD WINAPI _cmdr_thread(struct _cmdr_params* params) {
 			char* reading_head;
 			struct _cmdr_rpm_params_t* rpm_params;
 
-			sent = 0;
-			total_sent = 0;
-			reading_head = rpm_params->src;
 			rpm_params = &(msg.params._cmdr_rpm_params);
+			reading_head = rpm_params->src;
+			total_sent = 0;
+			sent = 0;
 
 			while (total_sent < rpm_params->buff_len) {
 				_WriteFile(
@@ -888,8 +927,6 @@ DWORD WINAPI _cmdr_thread(struct _cmdr_params* params) {
 
 			res.res_type = BOOL_res_t;
 			res.val.bool = TRUE;
-			_WriteFile(params->write_handle, &res,
-				sizeof(res), &bytes_sent, (void*)0);
 			break;
 		}
 		case cmdr_vf: {
@@ -905,8 +942,6 @@ DWORD WINAPI _cmdr_thread(struct _cmdr_params* params) {
 
 			res.res_type = BOOL_res_t;
 			res.val.bool = good_free;
-			_WriteFile(params->write_handle, &res,
-				sizeof(res), &bytes_sent, (void*)0);
 			break;
 		}
 		case cmdr_va: {
@@ -923,8 +958,6 @@ DWORD WINAPI _cmdr_thread(struct _cmdr_params* params) {
 
 			res.res_type = ptr_res_t;
 			res.val.ptr = buf;
-			_WriteFile(params->write_handle, &res,
-				sizeof(res), &bytes_sent, (void*)0);
 			break;
 		}
 		case cmdr_vp: {
@@ -948,9 +981,6 @@ DWORD WINAPI _cmdr_thread(struct _cmdr_params* params) {
 				res.res_type = error_res_t;
 				res.val.ptr = good_protect;
 			}
-
-			_WriteFile(params->write_handle, &res,
-				sizeof(res), &bytes_sent, (void*)0);
 			break;
 		}
 		case cmdr_lla: {
@@ -964,8 +994,6 @@ DWORD WINAPI _cmdr_thread(struct _cmdr_params* params) {
 
 			res.res_type = HANDLE_res_t;
 			res.val.ptr = module_handle;
-			_WriteFile(params->write_handle, &res,
-				sizeof(res), &bytes_sent, (void*)0);
 			break;
 		}
 		case cmdr_ct: {
@@ -985,8 +1013,6 @@ DWORD WINAPI _cmdr_thread(struct _cmdr_params* params) {
 
 			res.res_type = DWORD_res_t;
 			res.val.ptr = thread_id;
-			_WriteFile(params->write_handle, &res,
-				sizeof(res), &bytes_sent, (void*)0);
 			break;
 		}
 		case cmdr_gpa: {
@@ -1001,8 +1027,6 @@ DWORD WINAPI _cmdr_thread(struct _cmdr_params* params) {
 
 			res.res_type = FARPROC_res_t;
 			res.val.ptr = proc_addr;
-			_WriteFile(params->write_handle, &res,
-				sizeof(res), &bytes_sent, (void*)0);
 			break;
 		}
 		case cmdr_ncc: {
@@ -1034,9 +1058,6 @@ DWORD WINAPI _cmdr_thread(struct _cmdr_params* params) {
 				res.res_type = ptr_res_t;
 				res.val.ptr = code_cave;
 			}
-
-			_WriteFile(params->write_handle, &res,
-				sizeof(res), &bytes_sent, (void*)0);
 			break;
 		}
 		case cmdr_fcc: {
@@ -1069,32 +1090,90 @@ DWORD WINAPI _cmdr_thread(struct _cmdr_params* params) {
 				res.res_type = ptr_res_t;
 				res.val.ptr = code_cave;
 			}
-			_WriteFile(params->write_handle, &res,
-				sizeof(res), &bytes_sent, (void*)0);
+			break;
+		}
+		case cmdr_mi: {
+			char* image_base;
+			struct _cmdr_mi_params_t* mi_params;
+
+			mi_params = &(msg.params._cmdr_mi_params);
+			map_image(mi_params->file_loc, &image_base, _VirtualAlloc);
+
+			res.res_type = ptr_res_t;
+			res.val.ptr = image_base;
+			break;
+		}
+		case cmdr_fr: {
+			struct _cmdr_fr_params_t* fr_params;
+			fr_params = &(msg.params._cmdr_fr_params);
+			fix_relocations(fr_params->image_base);
+
+			res.res_type = BOOL_res_t;
+			res.val.ptr = TRUE;
+			break;
+		}
+		case cmdr_fi: {
+			struct _cmdr_fi_params_t* fi_params;
+			fi_params = &(msg.params._cmdr_fi_params);
+			fix_imports(fi_params->image_base, _LoadLibraryA, _GetProcAddress);
+
+			res.res_type = BOOL_res_t;
+			res.val.ptr = TRUE;
+			break;
+		}
+		case cmdr_tls: {
+			struct _cmdr_tls_params_t* tls_params;
+			tls_params = &(msg.params._cmdr_tls_params);
+			call_tls_callbacks(tls_params->image_base);
+
+			res.res_type = BOOL_res_t;
+			res.val.ptr = TRUE;
+			break;
+		}
+		case cmdr_seh: {
+			struct _cmdr_seh_params_t* seh_params;
+			seh_params = &(msg.params._cmdr_seh_params);
+			load_seh(seh_params->image_base, _RtlAddFunctionTable);
+
+			res.res_type = BOOL_res_t;
+			res.val.ptr = TRUE;
+			
+			break;
+		}
+		case cmdr_call: {
+			struct _cmdr_call_params_t* call_params;
+			call_params = &(msg.params._cmdr_call_params);
+			call_entry(call_params->image_base);
+
+			res.res_type = BOOL_res_t;
+			res.val.ptr = TRUE;
 			break;
 		}
 		case cmdr_end: {
 			res.res_type = DWORD_res_t;
 			res.val.dword = 0;
-			_WriteFile(params->write_handle, &res,
-				sizeof(res), &bytes_sent, (void*)0);
 			return 0;
 		}
+		default: continue;
 		}
-
-		return 0;
+		_WriteFile(params->write_handle, &res,
+			sizeof(res), &bytes_sent, (void*)0);
 	}
+
+	return 0;
 }
 
 void set_cmdr_funcs(struct _cmdr_params* params) {
 	params->_Sleep = Sleep;
 	params->_ReadFile = ReadFile;
+	params->_WriteFile = WriteFile;
 	params->_VirtualFree = VirtualFree;
 	params->_VirtualAlloc = VirtualAlloc;
 	params->_LoadLibraryA = LoadLibraryA;
 	params->_CreateThread = CreateThread;
 	params->_VirtualProtect = VirtualProtect;
 	params->_GetProcAddress = GetProcAddress;
+	params->_RtlAddFunctionTable = RtlAddFunctionTable;
 }
 
 struct _ztap_cmdr_pkg_t {
@@ -1102,7 +1181,7 @@ struct _ztap_cmdr_pkg_t {
 	struct _cmdr_params params;
 };
 
-int ztap_cmdr_init(HANDLE proc_handle, struct ztap_handle_t** handle) {
+int ztap_cmdr_init(HANDLE proc_handle, struct ztap_handle_t* handle) {
 	HANDLE cmdr_write_handle;
 	HANDLE msg_read_handle;
 	BOOL piped;
@@ -1172,8 +1251,10 @@ int ztap_cmdr_init(HANDLE proc_handle, struct ztap_handle_t** handle) {
 		&remote_pkg->params, 0, 0);
 	if (thread_handle == NULL) return -8;
 
-	(*handle)->pipe_read = cmdr_read_handle;
-	(*handle)->pipe_write = cmdr_write_handle;
+	handle->pipe_read = cmdr_read_handle;
+	handle->pipe_write = cmdr_write_handle;
+	
+	free(pkg);
 	return 0;
 }
 
@@ -1516,6 +1597,165 @@ int ztap_cmdr_fcc(struct ztap_handle_t* handle,
 	return 0;
 }
 
+int ztap_cmdr_mi(struct ztap_handle_t* handle, 
+				 char* file_loc,
+				 char** image_base) {
+	struct _cmdr_msg_t msg;
+	struct _cmdr_mi_params_t* params;
+
+	memset(&msg, 0, sizeof(msg));
+	msg.msg_enum = cmdr_mi;
+	params = &msg.params._cmdr_mi_params;
+
+	params->file_loc = file_loc;
+
+	size_t sent;
+	size_t total_sent;
+	char* writing_head;
+
+	WriteFile(handle->pipe_write, &msg,
+		sizeof(msg), &sent, (void*)0);
+
+	size_t res_recvd;
+	struct _cmdr_res_t res;
+	ReadFile(handle->pipe_read, &res, sizeof(res),
+		&res_recvd, (void*)0);
+
+	if (res.res_type == error_res_t) return -1;
+	
+	*image_base = res.val.ptr;
+	return TRUE;
+}
+
+int ztap_cmdr_fr(struct ztap_handle_t* handle, char* image_base) {
+	struct _cmdr_msg_t msg;
+	struct _cmdr_fr_params_t* params;
+
+	memset(&msg, 0, sizeof(msg));
+	msg.msg_enum = cmdr_fr;
+	params = &msg.params._cmdr_fr_params;
+
+	params->image_base = image_base;
+
+	size_t sent;
+	size_t total_sent;
+	char* writing_head;
+
+	WriteFile(handle->pipe_write, &msg,
+		sizeof(msg), &sent, (void*)0);
+
+	size_t res_recvd;
+	struct _cmdr_res_t res;
+	ReadFile(handle->pipe_read, &res, sizeof(res),
+		&res_recvd, (void*)0);
+
+	if (res.res_type == error_res_t) return -1;
+	return res.val.bool;
+}
+
+int ztap_cmdr_fi(struct ztap_handle_t* handle, char* image_base) {
+	struct _cmdr_msg_t msg;
+	struct _cmdr_fi_params_t* params;
+
+	memset(&msg, 0, sizeof(msg));
+	msg.msg_enum = cmdr_fi;
+	params = &msg.params._cmdr_fi_params;
+
+	params->image_base = image_base;
+
+	size_t sent;
+	size_t total_sent;
+	char* writing_head;
+
+	WriteFile(handle->pipe_write, &msg,
+		sizeof(msg), &sent, (void*)0);
+
+	size_t res_recvd;
+	struct _cmdr_res_t res;
+	ReadFile(handle->pipe_read, &res, sizeof(res),
+		&res_recvd, (void*)0);
+
+	if (res.res_type == error_res_t) return -1;
+	return res.val.bool;
+}
+
+int ztap_cmdr_tls(struct ztap_handle_t* handle, char* image_base) {
+	struct _cmdr_msg_t msg;
+	struct _cmdr_tls_params_t* params;
+
+	memset(&msg, 0, sizeof(msg));
+	msg.msg_enum = cmdr_tls;
+	params = &msg.params._cmdr_tls_params;
+
+	params->image_base = image_base;
+
+	size_t sent;
+	size_t total_sent;
+	char* writing_head;
+
+	WriteFile(handle->pipe_write, &msg,
+		sizeof(msg), &sent, (void*)0);
+
+	size_t res_recvd;
+	struct _cmdr_res_t res;
+	ReadFile(handle->pipe_read, &res, sizeof(res),
+		&res_recvd, (void*)0);
+
+	if (res.res_type == error_res_t) return -1;
+	return res.val.bool;
+}
+
+int ztap_cmdr_seh(struct ztap_handle_t* handle, char* image_base) {
+	struct _cmdr_msg_t msg;
+	struct _cmdr_seh_params_t* params;
+
+	memset(&msg, 0, sizeof(msg));
+	msg.msg_enum = cmdr_seh;
+	params = &msg.params._cmdr_seh_params;
+
+	params->image_base = image_base;
+
+	size_t sent;
+	size_t total_sent;
+	char* writing_head;
+
+	WriteFile(handle->pipe_write, &msg,
+		sizeof(msg), &sent, (void*)0);
+
+	size_t res_recvd;
+	struct _cmdr_res_t res;
+	ReadFile(handle->pipe_read, &res, sizeof(res),
+		&res_recvd, (void*)0);
+
+	if (res.res_type == error_res_t) return -1;
+	return res.val.bool;
+}
+
+int ztap_cmdr_call(struct ztap_handle_t* handle, char* image_base) {
+	struct _cmdr_msg_t msg;
+	struct _cmdr_call_params_t* params;
+
+	memset(&msg, 0, sizeof(msg));
+	msg.msg_enum = cmdr_call;
+	params = &msg.params._cmdr_call_params;
+
+	params->image_base = image_base;
+
+	size_t sent;
+	size_t total_sent;
+	char* writing_head;
+
+	WriteFile(handle->pipe_write, &msg,
+		sizeof(msg), &sent, (void*)0);
+
+	size_t res_recvd;
+	struct _cmdr_res_t res;
+	ReadFile(handle->pipe_read, &res, sizeof(res),
+		&res_recvd, (void*)0);
+
+	if (res.res_type == error_res_t) return -1;
+	return res.val.bool;
+}
 
 void ztap_cmdr_end(struct ztap_handle_t* handle) {
 	struct _cmdr_msg_t msg;

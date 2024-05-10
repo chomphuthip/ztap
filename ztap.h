@@ -76,7 +76,7 @@ struct ztap_handle_t {
 		-8: Couldn't start thread in target process
 */
 int ztap_cmdr_init(HANDLE proc_handle,
-	struct ztap_handle_t** handle);
+	struct ztap_handle_t* handle);
 
 /*
 	Equivalent to WriteProcessMemory.
@@ -222,6 +222,75 @@ int ztap_cmdr_fcc(
 	uint64_t size,
 	char* end,
 	char** code_cave_ptr
+);
+
+/*
+	Maps a PE from a buffer in the target process's memory.
+
+		Returns:
+			TRUE: Success
+*/
+BOOL ztap_cmdr_mi(
+	struct ztap_handle_t* handle,
+	char* file_loc,
+	char** image_base
+);
+
+/*
+	Fixes relocation table of an image in the target process.
+	Pass it the base of the image mapped by ztap_cmdr_mi
+
+		Returns:
+			TRUE: Success
+*/
+BOOL ztap_cmdr_fr(
+	struct ztap_handle_t* handle,
+	char* image_base
+);
+
+/*
+	Fixes bound imports of an image in the target process.
+	Pass it the base of the image mapped by ztap_cmdr_mi
+
+		Returns:
+			TRUE: Success
+*/
+BOOL ztap_cmdr_fi(
+	struct ztap_handle_t* handle,
+	char* image_base
+);
+
+/*
+	Calls TLS callbacks.
+
+		Returns:
+			TRUE: Success
+*/
+BOOL ztap_cmdr_tls(
+	struct ztap_handle_t* handle,
+	char* image_base
+);
+
+/*
+	Adds SEH function table.
+
+		Returns:
+			TRUE: Success
+*/
+BOOL ztap_cmdr_seh(
+	struct ztap_handle_t* handle,
+	char* image_base
+);
+
+/*
+	Calls the entrypoint of an image.
+
+		Returns:
+			TRUE: Success
+*/
+BOOL ztap_cmdr_call(
+	struct ztap_handle_t* handle,
+	char* image_base
 );
 
 /*
