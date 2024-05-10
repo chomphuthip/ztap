@@ -195,10 +195,11 @@ void ztap_cmdr_ct(
 /*
 	Finds the next code cave.
 	Uses a start and range to search.
+	Mogged by SCOIN.
 
 		Returns:
-			-1: Error
-			Non -1: pointer to code cave
+		-1: Error
+		Non -1: pointer to code cave
 */
 int ztap_cmdr_ncc(
 	struct ztap_handle_t* handle,
@@ -213,8 +214,8 @@ int ztap_cmdr_ncc(
 	Uses a start and end to search.
 
 		Returns:
-			-1: Error
-			Non -1: pointer to code cave
+		-1: Error
+		Non -1: pointer to code cave
 */
 int ztap_cmdr_fcc(
 	struct ztap_handle_t* handle,
@@ -228,7 +229,7 @@ int ztap_cmdr_fcc(
 	Maps a PE from a buffer in the target process's memory.
 
 		Returns:
-			TRUE: Success
+		TRUE: Success
 */
 BOOL ztap_cmdr_mi(
 	struct ztap_handle_t* handle,
@@ -241,7 +242,7 @@ BOOL ztap_cmdr_mi(
 	Pass it the base of the image mapped by ztap_cmdr_mi
 
 		Returns:
-			TRUE: Success
+		TRUE: Success
 */
 BOOL ztap_cmdr_fr(
 	struct ztap_handle_t* handle,
@@ -253,7 +254,7 @@ BOOL ztap_cmdr_fr(
 	Pass it the base of the image mapped by ztap_cmdr_mi
 
 		Returns:
-			TRUE: Success
+		TRUE: Success
 */
 BOOL ztap_cmdr_fi(
 	struct ztap_handle_t* handle,
@@ -264,7 +265,7 @@ BOOL ztap_cmdr_fi(
 	Calls TLS callbacks.
 
 		Returns:
-			TRUE: Success
+		TRUE: Success
 */
 BOOL ztap_cmdr_tls(
 	struct ztap_handle_t* handle,
@@ -275,7 +276,7 @@ BOOL ztap_cmdr_tls(
 	Adds SEH function table.
 
 		Returns:
-			TRUE: Success
+		TRUE: Success
 */
 BOOL ztap_cmdr_seh(
 	struct ztap_handle_t* handle,
@@ -286,7 +287,7 @@ BOOL ztap_cmdr_seh(
 	Calls the entrypoint of an image.
 
 		Returns:
-			TRUE: Success
+		TRUE: Success
 */
 BOOL ztap_cmdr_call(
 	struct ztap_handle_t* handle,
