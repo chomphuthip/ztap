@@ -198,8 +198,8 @@ void ztap_cmdr_ct(
 	Mogged by SCOIN.
 
 		Returns:
+		0: Success
 		-1: Error
-		Non -1: pointer to code cave
 */
 int ztap_cmdr_ncc(
 	struct ztap_handle_t* handle,
@@ -214,8 +214,8 @@ int ztap_cmdr_ncc(
 	Uses a start and end to search.
 
 		Returns:
+		0: Success
 		-1: Error
-		Non -1: pointer to code cave
 */
 int ztap_cmdr_fcc(
 	struct ztap_handle_t* handle,
