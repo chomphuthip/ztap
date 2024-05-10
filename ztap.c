@@ -102,6 +102,219 @@ inline void* _memcpy(void* dest, void* src, size_t len) {
 	return dest;
 }
 
+__forceinline void map_image(char* file_loc, char** image_base_ptr, f_VirtualAlloc _VirtualAlloc) {
+	/* Writing the image to the correct locations */
+	IMAGE_DOS_HEADER* file_dos_h;
+	IMAGE_NT_HEADERS* file_nt_h;
+	IMAGE_OPTIONAL_HEADER* file_opt_h;
+	IMAGE_FILE_HEADER* file_file_h;
+
+	file_dos_h = file_loc;
+	file_nt_h = file_loc + file_dos_h->e_lfanew;
+	file_opt_h = &file_nt_h->OptionalHeader;
+	file_file_h = &file_nt_h->FileHeader;
+
+	char* image_base;
+	image_base = _VirtualAlloc((void*)0, file_opt_h->SizeOfImage,
+		MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+
+	_memcpy(image_base, file_loc, 0x1000);
+
+	IMAGE_SECTION_HEADER* section_header;
+	section_header = IMAGE_FIRST_SECTION(file_nt_h);
+
+	for (uint32_t i = 0; i < file_file_h->NumberOfSections; i++) {
+		if (!section_header->SizeOfRawData)
+			continue;
+
+		_memcpy(image_base + section_header->VirtualAddress,
+			file_loc + section_header->PointerToRawData,
+			section_header->SizeOfRawData);
+
+		section_header++;
+	}
+
+	*image_base_ptr = image_base;
+}
+
+__forceinline void fix_relocations(char* image_base) {
+	IMAGE_DOS_HEADER* img_dos_h;
+	IMAGE_NT_HEADERS* img_nt_h;
+	IMAGE_OPTIONAL_HEADER* img_opt_h;
+	IMAGE_FILE_HEADER* img_img_h;
+
+	img_dos_h = image_base;
+	img_nt_h = image_base + img_dos_h->e_lfanew;
+	img_opt_h = &img_nt_h->OptionalHeader;
+	img_img_h = &img_nt_h->FileHeader;
+
+	IMAGE_DATA_DIRECTORY* dd;
+	dd = img_opt_h->DataDirectory;
+
+	int delta;
+	IMAGE_BASE_RELOCATION* reloc_entry;
+	delta = image_base - img_opt_h->ImageBase;
+	reloc_entry = &dd[IMAGE_DIRECTORY_ENTRY_BASERELOC];
+
+	IMAGE_BASE_RELOCATION* reloc_data;
+	reloc_data = image_base + reloc_entry->VirtualAddress;
+
+	while (reloc_data->VirtualAddress) {
+		if (reloc_data->SizeOfBlock >= sizeof(IMAGE_BASE_RELOCATION)) {
+			int count;
+			count = (reloc_data->SizeOfBlock -
+				sizeof(IMAGE_BASE_RELOCATION)) / sizeof(WORD);
+
+			uint16_t* list;
+			list = reloc_data + 1;
+
+			for (int i = 0; i < count; i++) {
+				if (!list[i]) continue;
+
+				uint32_t* offset_ptr;
+				offset_ptr = image_base +
+					(reloc_data->VirtualAddress +
+						(list[i] & 0xfff));
+
+				*offset_ptr += delta;
+			}
+		}
+
+		reloc_data = (char*)reloc_data + reloc_data->SizeOfBlock;
+	}
+}
+
+__forceinline void fix_imports(char* image_base, f_LoadLibraryA _LoadLibraryA, f_GetProcAddress _GetProcAddress) {
+	IMAGE_DOS_HEADER* img_dos_h;
+	IMAGE_NT_HEADERS* img_nt_h;
+	IMAGE_OPTIONAL_HEADER* img_opt_h;
+	IMAGE_FILE_HEADER* img_img_h;
+
+	img_dos_h = image_base;
+	img_nt_h = image_base + img_dos_h->e_lfanew;
+	img_opt_h = &img_nt_h->OptionalHeader;
+	img_img_h = &img_nt_h->FileHeader;
+
+	IMAGE_DATA_DIRECTORY* dd;
+	dd = img_opt_h->DataDirectory;
+
+	/* Fixing imports */
+	IMAGE_DATA_DIRECTORY* import_dir_entry;
+	IMAGE_IMPORT_DESCRIPTOR* import_descriptor;
+
+	import_dir_entry = &dd[IMAGE_DIRECTORY_ENTRY_IMPORT];
+	import_descriptor = image_base + import_dir_entry->VirtualAddress;
+
+	while (import_descriptor->Name) {
+		char* lib_name;
+		lib_name = image_base + import_descriptor->Name;
+
+		HINSTANCE dll_handle;
+		dll_handle = _LoadLibraryA(lib_name);
+
+		uint64_t* thunk_ref;
+		uint64_t* func_ref;
+
+		thunk_ref = image_base + import_descriptor->OriginalFirstThunk;
+		func_ref = image_base + import_descriptor->FirstThunk;
+		if (!thunk_ref) thunk_ref = func_ref;
+
+		for (; *thunk_ref; thunk_ref++, func_ref++) {
+			if (IMAGE_SNAP_BY_ORDINAL(*thunk_ref))
+				*func_ref = _GetProcAddress(dll_handle,
+					(char*)(*thunk_ref & 0xfff));
+			else
+				*func_ref = _GetProcAddress(dll_handle,
+					((IMAGE_IMPORT_BY_NAME*)
+						(image_base + (*thunk_ref)))->Name);
+		}
+
+		import_descriptor++;
+	}
+}
+
+__forceinline void call_tls_callbacks(char* image_base) {
+	IMAGE_DOS_HEADER* img_dos_h;
+	IMAGE_NT_HEADERS* img_nt_h;
+	IMAGE_OPTIONAL_HEADER* img_opt_h;
+	IMAGE_FILE_HEADER* img_img_h;
+
+	img_dos_h = image_base;
+	img_nt_h = image_base + img_dos_h->e_lfanew;
+	img_opt_h = &img_nt_h->OptionalHeader;
+	img_img_h = &img_nt_h->FileHeader;
+
+	IMAGE_DATA_DIRECTORY* dd;
+	dd = img_opt_h->DataDirectory;
+
+	IMAGE_DATA_DIRECTORY* tls_entry;
+	tls_entry = &dd[IMAGE_DIRECTORY_ENTRY_TLS];
+
+	int delta;
+	IMAGE_BASE_RELOCATION* reloc_entry;
+	delta = image_base - img_opt_h->ImageBase;
+	reloc_entry = &dd[IMAGE_DIRECTORY_ENTRY_BASERELOC];
+
+	if (tls_entry->Size) {
+		IMAGE_TLS_DIRECTORY* tls_dir;
+		PIMAGE_TLS_CALLBACK* callback;
+		PIMAGE_TLS_CALLBACK callback_rebased;
+
+		tls_dir = image_base + tls_entry->VirtualAddress;
+		callback = tls_dir->AddressOfCallBacks;
+		for (; callback && *callback; callback++) {
+			callback_rebased = (char*)*callback + delta;
+			(callback_rebased)(image_base, DLL_PROCESS_ATTACH, (void*)0);
+		}
+	}
+}
+
+__forceinline void load_seh(char* image_base, f_RtlAddFunctionTable _RtlAddFunctionTable) {
+	IMAGE_DOS_HEADER* img_dos_h;
+	IMAGE_NT_HEADERS* img_nt_h;
+	IMAGE_OPTIONAL_HEADER* img_opt_h;
+	IMAGE_FILE_HEADER* img_img_h;
+
+	img_dos_h = image_base;
+	img_nt_h = image_base + img_dos_h->e_lfanew;
+	img_opt_h = &img_nt_h->OptionalHeader;
+	img_img_h = &img_nt_h->FileHeader;
+
+	IMAGE_DATA_DIRECTORY* dd;
+	dd = img_opt_h->DataDirectory;
+
+	IMAGE_DATA_DIRECTORY* seh_entry;
+	seh_entry = &dd[IMAGE_DIRECTORY_ENTRY_EXCEPTION];
+
+	if (seh_entry->Size) {
+		_RtlAddFunctionTable(
+			image_base + seh_entry->VirtualAddress,
+			seh_entry->Size / sizeof(IMAGE_RUNTIME_FUNCTION_ENTRY),
+			image_base);
+	}
+}
+
+__forceinline void call_entry(char* image_base) {
+	IMAGE_DOS_HEADER* img_dos_h;
+	IMAGE_NT_HEADERS* img_nt_h;
+	IMAGE_OPTIONAL_HEADER* img_opt_h;
+	IMAGE_FILE_HEADER* img_img_h;
+
+	img_dos_h = image_base;
+	img_nt_h = image_base + img_dos_h->e_lfanew;
+	img_opt_h = &img_nt_h->OptionalHeader;
+	img_img_h = &img_nt_h->FileHeader;
+
+	IMAGE_DATA_DIRECTORY* dd;
+	dd = img_opt_h->DataDirectory;
+
+	f_DLL_ENTRY_POINT _entry;
+	_entry = image_base + img_opt_h->AddressOfEntryPoint;
+
+	_entry(image_base, DLL_PROCESS_ATTACH, (void*)0);
+}
+
+
 struct headers_cache {
 	IMAGE_DOS_HEADER* dos_h;
 	IMAGE_NT_HEADERS* nt_h;
@@ -171,149 +384,14 @@ DWORD WINAPI _oneshot_loader(struct _oneshot_params* params) {
 		file_loc = _MapViewOfFile(file_map, FILE_MAP_READ, 0, 0, 0);
 	}
 
-	/* Writing the image to the correct locations */
-	IMAGE_DOS_HEADER* file_dos_h;
-	IMAGE_NT_HEADERS* file_nt_h;
-	IMAGE_OPTIONAL_HEADER* file_opt_h;
-	IMAGE_FILE_HEADER* file_file_h;
-
-	file_dos_h = file_loc;
-	file_nt_h = file_loc + file_dos_h->e_lfanew;
-	file_opt_h = &file_nt_h->OptionalHeader;
-	file_file_h = &file_nt_h->FileHeader;
-
 	char* image_base;
-	image_base = _VirtualAlloc((void*)0, file_opt_h->SizeOfImage,
-		MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+	map_image(file_loc, &image_base, _VirtualAlloc);
 
-	_memcpy(image_base, file_loc, 0x1000);
-
-	IMAGE_SECTION_HEADER* section_header;
-	section_header = IMAGE_FIRST_SECTION(file_nt_h);
-
-	for (uint32_t i = 0; i < file_file_h->NumberOfSections; i++) {
-		if (!section_header->SizeOfRawData)
-			continue;
-
-		_memcpy(image_base + section_header->VirtualAddress,
-			file_loc + section_header->PointerToRawData,
-			section_header->SizeOfRawData);
-		
-		section_header++;
-	}
-
-
-	/* Fixing relocations */
-	IMAGE_DOS_HEADER* img_dos_h;
-	IMAGE_NT_HEADERS* img_nt_h;
-	IMAGE_OPTIONAL_HEADER* img_opt_h;
-	IMAGE_FILE_HEADER* img_img_h;
-
-	img_dos_h = image_base;
-	img_nt_h = image_base + img_dos_h->e_lfanew;
-	img_opt_h = &img_nt_h->OptionalHeader;
-	img_img_h = &img_nt_h->FileHeader;
-
-	IMAGE_DATA_DIRECTORY* dd;
-	dd = img_opt_h->DataDirectory;
-
-	int delta;
-	IMAGE_BASE_RELOCATION* reloc_entry;
-	delta = image_base - img_opt_h->ImageBase;
-	reloc_entry = &dd[IMAGE_DIRECTORY_ENTRY_BASERELOC];
-
-	IMAGE_BASE_RELOCATION* reloc_data;
-	reloc_data = image_base + reloc_entry->VirtualAddress;
-
-	while (reloc_data->VirtualAddress) {
-		if (reloc_data->SizeOfBlock >= sizeof(IMAGE_BASE_RELOCATION)) {
-			int count;
-			count = (reloc_data->SizeOfBlock -
-				sizeof(IMAGE_BASE_RELOCATION)) / sizeof(WORD);
-
-			uint16_t* list;
-			list = reloc_data + 1;
-
-			for (int i = 0; i < count; i++) {
-				if (!list[i]) continue;
-
-				uint32_t* offset_ptr;
-				offset_ptr = image_base +
-					(reloc_data->VirtualAddress +
-						(list[i] & 0xfff));
-
-				*offset_ptr += delta;
-			}
-		}
-
-		reloc_data = (char*)reloc_data + reloc_data->SizeOfBlock;
-	}
-
-	/* Fixing imports */
-	IMAGE_DATA_DIRECTORY* import_dir_entry;
-	IMAGE_IMPORT_DESCRIPTOR* import_descriptor;
-
-	import_dir_entry = &dd[IMAGE_DIRECTORY_ENTRY_IMPORT];
-	import_descriptor = image_base + import_dir_entry->VirtualAddress;
-
-	while (import_descriptor->Name) {
-		char* lib_name;
-		lib_name = image_base + import_descriptor->Name;
-
-		HINSTANCE dll_handle;
-		dll_handle = _LoadLibraryA(lib_name);
-
-		uint64_t* thunk_ref;
-		uint64_t* func_ref;
-
-		thunk_ref = image_base + import_descriptor->OriginalFirstThunk;
-		func_ref = image_base + import_descriptor->FirstThunk;
-		if (!thunk_ref) thunk_ref = func_ref;
-
-		for (; *thunk_ref; thunk_ref++, func_ref++) {
-			if (IMAGE_SNAP_BY_ORDINAL(*thunk_ref))
-				*func_ref = _GetProcAddress(dll_handle,
-					(char*)(*thunk_ref & 0xfff));
-			else
-				*func_ref = _GetProcAddress(dll_handle,
-					((IMAGE_IMPORT_BY_NAME*)
-						(image_base + (*thunk_ref)))->Name);
-		}
-
-		import_descriptor++;
-	}
-	
-	/* Calling TLS callbacks */
-
-	IMAGE_DATA_DIRECTORY* tls_entry;
-	tls_entry = &dd[IMAGE_DIRECTORY_ENTRY_TLS];
-
-	if (tls_entry->Size) {
-		IMAGE_TLS_DIRECTORY* tls_dir;
-		PIMAGE_TLS_CALLBACK* callback;
-
-		tls_dir = image_base + tls_entry->VirtualAddress;
-		callback = tls_dir->AddressOfCallBacks;
-		for (; callback && *callback; callback++) {
-			(*callback)(image_base, DLL_PROCESS_ATTACH, (void*)0);
-		}
-	}
-
-	/* Loading exceptions */
-	IMAGE_DATA_DIRECTORY* seh_entry;
-	seh_entry = &dd[IMAGE_DIRECTORY_ENTRY_EXCEPTION];
-
-	if (seh_entry->Size) {
-		_RtlAddFunctionTable(
-			image_base + seh_entry->VirtualAddress,
-			seh_entry->Size / sizeof(IMAGE_RUNTIME_FUNCTION_ENTRY),
-			image_base);
-	}
-
-	f_DLL_ENTRY_POINT _entry;
-	_entry = image_base + img_opt_h->AddressOfEntryPoint;
-
-	_entry(image_base, DLL_PROCESS_ATTACH, (void*)0);
+	fix_relocations(image_base);
+	fix_imports(image_base, _LoadLibraryA, _GetProcAddress);
+	call_tls_callbacks(image_base);
+	load_seh(image_base, _RtlAddFunctionTable);
+	call_entry(image_base);
 
 	return 0;
 }
@@ -482,149 +560,15 @@ __declspec(safebuffers) DWORD WINAPI _pipe_loader(struct _pipe_params* params) {
 		writing_head += read;
 	}
 
-	/* Writing the image to the correct locations */
-	IMAGE_DOS_HEADER* file_dos_h;
-	IMAGE_NT_HEADERS* file_nt_h;
-	IMAGE_OPTIONAL_HEADER* file_opt_h;
-	IMAGE_FILE_HEADER* file_file_h;
-
-	file_dos_h = file_loc;
-	file_nt_h = file_loc + file_dos_h->e_lfanew;
-	file_opt_h = &file_nt_h->OptionalHeader;
-	file_file_h = &file_nt_h->FileHeader;
-
 	char* image_base;
-	image_base = _VirtualAlloc((void*)0, file_opt_h->SizeOfImage,
-		MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+	map_image(file_loc, &image_base, _VirtualAlloc);
 
-	_memcpy(image_base, file_loc, 0x1000);
-
-	IMAGE_SECTION_HEADER* section_header;
-	section_header = IMAGE_FIRST_SECTION(file_nt_h);
-
-	for (uint32_t i = 0; i < file_file_h->NumberOfSections; i++) {
-		if (!section_header->SizeOfRawData)
-			continue;
-
-		_memcpy(image_base + section_header->VirtualAddress,
-			file_loc + section_header->PointerToRawData,
-			section_header->SizeOfRawData);
-
-		section_header++;
-	}
-
-	/* Fixing relocations */
-	IMAGE_DOS_HEADER* img_dos_h;
-	IMAGE_NT_HEADERS* img_nt_h;
-	IMAGE_OPTIONAL_HEADER* img_opt_h;
-	IMAGE_FILE_HEADER* img_img_h;
-
-	img_dos_h = image_base;
-	img_nt_h = image_base + img_dos_h->e_lfanew;
-	img_opt_h = &img_nt_h->OptionalHeader;
-	img_img_h = &img_nt_h->FileHeader;
-
-	IMAGE_DATA_DIRECTORY* dd;
-	dd = img_opt_h->DataDirectory;
-
-	int delta;
-	IMAGE_BASE_RELOCATION* reloc_entry;
-	delta = image_base - img_opt_h->ImageBase;
-	reloc_entry = &dd[IMAGE_DIRECTORY_ENTRY_BASERELOC];
-
-	IMAGE_BASE_RELOCATION* reloc_data;
-	reloc_data = image_base + reloc_entry->VirtualAddress;
-
-	while (reloc_data->VirtualAddress) {
-		if (reloc_data->SizeOfBlock >= sizeof(IMAGE_BASE_RELOCATION)) {
-			int count;
-			count = (reloc_data->SizeOfBlock -
-				sizeof(IMAGE_BASE_RELOCATION)) / sizeof(WORD);
-
-			uint16_t* list;
-			list = reloc_data + 1;
-
-			for (int i = 0; i < count; i++) {
-				if (!list[i]) continue;
-
-				uint32_t* offset_ptr;
-				offset_ptr = image_base +
-					(reloc_data->VirtualAddress +
-						(list[i] & 0xfff));
-
-				*offset_ptr += delta;
-			}
-		}
-
-		reloc_data = (char*)reloc_data + reloc_data->SizeOfBlock;
-	}
-
-	/* Fixing imports */
-	IMAGE_DATA_DIRECTORY* import_dir_entry;
-	IMAGE_IMPORT_DESCRIPTOR* import_descriptor;
-
-	import_dir_entry = &dd[IMAGE_DIRECTORY_ENTRY_IMPORT];
-	import_descriptor = image_base + import_dir_entry->VirtualAddress;
-
-	while (import_descriptor->Name) {
-		char* lib_name;
-		lib_name = image_base + import_descriptor->Name;
-
-		HINSTANCE dll_handle;
-		dll_handle = _LoadLibraryA(lib_name);
-
-		uint64_t* thunk_ref;
-		uint64_t* func_ref;
-
-		thunk_ref = image_base + import_descriptor->OriginalFirstThunk;
-		func_ref = image_base + import_descriptor->FirstThunk;
-		if (!thunk_ref) thunk_ref = func_ref;
-
-		for (; *thunk_ref; thunk_ref++, func_ref++) {
-			if (IMAGE_SNAP_BY_ORDINAL(*thunk_ref))
-				*func_ref = _GetProcAddress(dll_handle,
-					(char*)(*thunk_ref & 0xfff));
-			else
-				*func_ref = _GetProcAddress(dll_handle,
-					((IMAGE_IMPORT_BY_NAME*)
-						(image_base + (*thunk_ref)))->Name);
-		}
-
-		import_descriptor++;
-	}
-
-	/* Calling TLS callbacks */
-
-	IMAGE_DATA_DIRECTORY* tls_entry;
-	tls_entry = &dd[IMAGE_DIRECTORY_ENTRY_TLS];
-
-	if (tls_entry->Size) {
-		IMAGE_TLS_DIRECTORY* tls_dir;
-		PIMAGE_TLS_CALLBACK* callback;
-
-		tls_dir = image_base + tls_entry->VirtualAddress;
-		callback = tls_dir->AddressOfCallBacks;
-		for (; callback && *callback; callback++) {
-			(*callback)(image_base, DLL_PROCESS_ATTACH, (void*)0);
-		}
-	}
-
-	/* Loading exceptions */
-	IMAGE_DATA_DIRECTORY* seh_entry;
-	seh_entry = &dd[IMAGE_DIRECTORY_ENTRY_EXCEPTION];
-
-	if (seh_entry->Size) {
-		_RtlAddFunctionTable(
-			image_base + seh_entry->VirtualAddress,
-			seh_entry->Size / sizeof(IMAGE_RUNTIME_FUNCTION_ENTRY),
-			image_base);
-	}
-
-	f_DLL_ENTRY_POINT _entry;
-	_entry = image_base + img_opt_h->AddressOfEntryPoint;
-
-	_entry(image_base, DLL_PROCESS_ATTACH, (void*)0);
-
+	fix_relocations(image_base);
+	fix_imports(image_base, _LoadLibraryA, _GetProcAddress);
+	call_tls_callbacks(image_base);
+	load_seh(image_base, _RtlAddFunctionTable);
+	call_entry(image_base);
+	
 	return 0;
 }
 
@@ -1185,7 +1129,7 @@ int ztap_cmdr_init(HANDLE proc_handle, struct ztap_handle_t** handle) {
 
 	piped = CreatePipe(&cmdr_read_handle, &res_write_handle,
 		(void*)0, 0);
-	if (piped == FALSE) return -1;
+	if (piped == FALSE) return -3;
 
 	HANDLE remote_send_handle;
 	duplicated = DuplicateHandle(
@@ -1197,7 +1141,7 @@ int ztap_cmdr_init(HANDLE proc_handle, struct ztap_handle_t** handle) {
 		TRUE,
 		DUPLICATE_SAME_ACCESS
 	);
-	if (!duplicated) return -2;
+	if (!duplicated) return -4;
 
 	struct _cmdr_params params;
 	set_cmdr_funcs(&params);
@@ -1206,7 +1150,7 @@ int ztap_cmdr_init(HANDLE proc_handle, struct ztap_handle_t** handle) {
 
 	struct _ztap_cmdr_pkg_t* pkg;
 	pkg = calloc(1, sizeof(*pkg));
-	if (pkg == 0) return -3;
+	if (pkg == 0) return -5;
 
 	memcpy(&pkg->params, &params, sizeof(params));
 	memcpy(&pkg->code_buf, _cmdr_thread, 0x1000);
@@ -1215,18 +1159,18 @@ int ztap_cmdr_init(HANDLE proc_handle, struct ztap_handle_t** handle) {
 	remote_pkg = VirtualAllocEx(proc_handle, (void*)0,
 		sizeof(*remote_pkg), MEM_COMMIT | MEM_RESERVE,
 		PAGE_EXECUTE_READWRITE);
-	if (remote_pkg == 0) return -4;
+	if (remote_pkg == 0) return -6;
 
 	BOOL wrote_properly;
 	wrote_properly = WriteProcessMemory(proc_handle,
 		remote_pkg, pkg, sizeof(*pkg), (void*)0);
-	if (!wrote_properly) return -5;
+	if (!wrote_properly) return -7;
 
 	HANDLE thread_handle;
 	thread_handle = CreateRemoteThread(proc_handle,
 		(void*)0, 0, remote_pkg->code_buf,
 		&remote_pkg->params, 0, 0);
-	if (thread_handle == NULL) return -6;
+	if (thread_handle == NULL) return -8;
 
 	(*handle)->pipe_read = cmdr_read_handle;
 	(*handle)->pipe_write = cmdr_write_handle;
@@ -1573,7 +1517,7 @@ int ztap_cmdr_fcc(struct ztap_handle_t* handle,
 }
 
 
-int ztap_cmdr_end(struct ztap_handle_t* handle) {
+void ztap_cmdr_end(struct ztap_handle_t* handle) {
 	struct _cmdr_msg_t msg;
 	struct _cmdr_fcc_params_t* params;
 
@@ -1592,5 +1536,4 @@ int ztap_cmdr_end(struct ztap_handle_t* handle) {
 	struct _cmdr_res_t res;
 	ReadFile(handle->pipe_read, &res, sizeof(res),
 		&res_recvd, (void*)0);
-	return 0;
 }
