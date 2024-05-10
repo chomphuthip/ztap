@@ -15,4 +15,4 @@ Attackers can now call functions that are critical for process injection without
 ✔ Injection using file handle\
 ✔ Reflective Injection\
 ✔ Pipe-based Injection\
-✔ Commander Mode\
+✔ Commander Mode
