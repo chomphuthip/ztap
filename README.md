@@ -6,8 +6,13 @@ ztap uses only
 * one `WriteProcessMemory` call
 * and one `CreateRemoteThread` call
 
-Features Roadmap
-* ✔ Injection using file handle
-* ✔ Reflective Injection
-* ✔ Pipe-based Injection
-* ✔ Commander Mode
+### Novel Techniques
+Commander mode injects a thread that listens on an anonymous pipe for requests from the injector. The thread will listen on the pipe and call internal versions of highly scrutinized functions like `VirutalAllocEx`, `WriteProcessMemory`, and `LoadLibraryEx`. 
+
+Attackers can now call functions that are critical for process injection without maintaining a process handle. In fact, after initializing commander mode, the process handle is no longer necessary and can be closed immediately. 
+
+### Features Roadmap
+✔ Injection using file handle\
+✔ Reflective Injection\
+✔ Pipe-based Injection\
+✔ Commander Mode\
