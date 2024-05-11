@@ -2,7 +2,6 @@
 
 #define _WIN32_LEAN_AND_MEAN
 #include<Windows.h>
-#include<winternl.h>
 
 #ifdef _ztap_cringe_overoptimization
 #include <emmintrin.h>
@@ -60,18 +59,17 @@ typedef BOOL(WINAPI* f_WriteFile)
 typedef void(WINAPI* f_Sleep)
 (DWORD dwMilliseconds);
 
-
 inline void* _memcpy(void* dest, void* src, size_t len) {
 	char* reading_head;
 	char* writing_head;
 	size_t to_copy;
-	
+
 	reading_head = src;
 	writing_head = dest;
 	to_copy = len;
 
 #ifdef _ztap_cringe_overoptimization
-	/* 
+	/*
 		check if reading and writing head could both be aligned
 			on a 16 byte boundary at some point
 	*/
@@ -252,20 +250,22 @@ __forceinline void call_tls_callbacks(char* image_base) {
 	IMAGE_DATA_DIRECTORY* tls_entry;
 	tls_entry = &dd[IMAGE_DIRECTORY_ENTRY_TLS];
 
-	if (!tls_entry->Size) return;
+	int delta;
+	IMAGE_BASE_RELOCATION* reloc_entry;
+	delta = image_base - img_opt_h->ImageBase;
+	reloc_entry = &dd[IMAGE_DIRECTORY_ENTRY_BASERELOC];
 
-	IMAGE_TLS_DIRECTORY* tls_dir;
-	tls_dir = image_base + tls_entry->VirtualAddress;
-		
-	uintptr_t offset_from_image_base;
-	PIMAGE_TLS_CALLBACK* callback;
-		
-	offset_from_image_base = img_opt_h->ImageBase -
-		tls_dir->AddressOfCallBacks;
-	callback = offset_from_image_base + image_base;
+	if (tls_entry->Size) {
+		IMAGE_TLS_DIRECTORY* tls_dir;
+		PIMAGE_TLS_CALLBACK* callback;
+		PIMAGE_TLS_CALLBACK callback_rebased;
 
-	for (; callback && *callback; callback++) {
-		(*callback)(image_base, DLL_PROCESS_ATTACH, (void*)0);
+		tls_dir = image_base + tls_entry->VirtualAddress;
+		callback = tls_dir->AddressOfCallBacks;
+		for (; callback && *callback; callback++) {
+			callback_rebased = (char*)*callback + delta;
+			(callback_rebased)(image_base, DLL_PROCESS_ATTACH, (void*)0);
+		}
 	}
 }
 
@@ -447,7 +447,7 @@ int ztap_disk(HANDLE proc_handle, HANDLE file_handle) {
 	if (remote_pkg == 0) return -3;
 
 	BOOL wrote_properly;
-	wrote_properly = WriteProcessMemory(proc_handle, 
+	wrote_properly = WriteProcessMemory(proc_handle,
 		remote_pkg, pkg, sizeof(*pkg), (void*)0);
 	if (!wrote_properly) return -4;
 
@@ -457,14 +457,13 @@ int ztap_disk(HANDLE proc_handle, HANDLE file_handle) {
 		&remote_pkg->params, 0, 0);
 	if (thread_handle == NULL) return -5;
 
-	free(pkg);
 	return 0;
 }
 
 struct _ztap_buff_pkg_t {
 	char code_buf[0x1000];
 	struct _oneshot_params params;
-	
+
 	char padding[0xf];
 };
 
@@ -499,7 +498,6 @@ int ztap_buff(HANDLE proc_handle, char* buff, size_t buff_len) {
 		&remote_pkg->params, 0, 0);
 	if (thread_handle == NULL) return -4;
 
-	free(pkg);
 	return 0;
 }
 
@@ -518,8 +516,8 @@ struct _pipe_params {
 	size_t file_len;
 };
 
-__declspec(safebuffers) DWORD WINAPI _pipe_loader(struct _pipe_params* params) {
-	
+__declspec(safebuffers)DWORD WINAPI _pipe_loader(struct _pipe_params* params) {
+
 	/* Setting up functions */
 	f_Sleep _Sleep;
 	f_ReadFile _ReadFile;
@@ -555,9 +553,9 @@ __declspec(safebuffers) DWORD WINAPI _pipe_loader(struct _pipe_params* params) {
 	total_read = 0;
 	writing_head = file_loc;
 	while (total_read < params->file_len) {
-		_ReadFile(params->read_handle, writing_head, 
+		_ReadFile(params->read_handle, writing_head,
 			params->file_len, &read, (void*)0);
-		
+
 		total_read += read;
 		writing_head += read;
 	}
@@ -570,7 +568,7 @@ __declspec(safebuffers) DWORD WINAPI _pipe_loader(struct _pipe_params* params) {
 	call_tls_callbacks(image_base);
 	load_seh(image_base, _RtlAddFunctionTable);
 	call_entry(image_base);
-	
+
 	return 0;
 }
 
@@ -595,7 +593,7 @@ int ztap_pipe(HANDLE proc_handle, char* buff, size_t buff_len) {
 	HANDLE write_handle;
 	HANDLE read_handle;
 	BOOL piped;
-	
+
 	piped = CreatePipe(&read_handle, &write_handle, (void*)0, 0);
 	if (piped == FALSE) return -1;
 
@@ -660,8 +658,7 @@ int ztap_pipe(HANDLE proc_handle, char* buff, size_t buff_len) {
 
 	CloseHandle(read_handle);
 	CloseHandle(write_handle);
-	
-	free(pkg);
+
 	return 0;
 }
 
@@ -770,7 +767,6 @@ struct _cmdr_end_params_t {
 	uint32_t sanity;
 };
 
-
 enum _cmdr_msg_enum_t {
 	cmdr_wpm,
 	cmdr_rpm,
@@ -833,10 +829,10 @@ struct _cmdr_res_t {
 		FARPROC farproc;
 		char* ptr;
 		DWORD dword;
-	} val ;
+	} val;
 };
 
-__declspec(safebuffers) 
+__declspec(safebuffers)
 DWORD WINAPI _cmdr_thread(struct _cmdr_params* params) {
 
 	/* Setting up functions */
@@ -860,7 +856,7 @@ DWORD WINAPI _cmdr_thread(struct _cmdr_params* params) {
 	_CreateThread = params->_CreateThread;
 	_VirtualProtect = params->_VirtualProtect;
 	_GetProcAddress = params->_GetProcAddress;
-	_RtlAddFunctionTable = params->_RtlAddFunctionTable ;
+	_RtlAddFunctionTable = params->_RtlAddFunctionTable;
 
 	_Sleep(10);
 
@@ -910,7 +906,7 @@ DWORD WINAPI _cmdr_thread(struct _cmdr_params* params) {
 			rpm_params = &(msg.params._cmdr_rpm_params);
 			reading_head = rpm_params->src;
 			total_sent = 0;
-			sent = 0;
+			sent = 0;			
 
 			while (total_sent < rpm_params->buff_len) {
 				_WriteFile(
@@ -1092,6 +1088,11 @@ DWORD WINAPI _cmdr_thread(struct _cmdr_params* params) {
 			}
 			break;
 		}
+		case cmdr_end: {
+			res.res_type = DWORD_res_t;
+			res.val.dword = 0;
+			return 0;
+		}
 		case cmdr_mi: {
 			char* image_base;
 			struct _cmdr_mi_params_t* mi_params;
@@ -1137,7 +1138,7 @@ DWORD WINAPI _cmdr_thread(struct _cmdr_params* params) {
 
 			res.res_type = BOOL_res_t;
 			res.val.ptr = TRUE;
-			
+
 			break;
 		}
 		case cmdr_call: {
@@ -1149,24 +1150,18 @@ DWORD WINAPI _cmdr_thread(struct _cmdr_params* params) {
 			res.val.ptr = TRUE;
 			break;
 		}
-		case cmdr_end: {
-			res.res_type = DWORD_res_t;
-			res.val.dword = 0;
-			return 0;
-		}
 		default: continue;
 		}
 		_WriteFile(params->write_handle, &res,
 			sizeof(res), &bytes_sent, (void*)0);
-	}
+		}
 
-	return 0;
+		return 0;
 }
 
 void set_cmdr_funcs(struct _cmdr_params* params) {
 	params->_Sleep = Sleep;
 	params->_ReadFile = ReadFile;
-	params->_WriteFile = WriteFile;
 	params->_VirtualFree = VirtualFree;
 	params->_VirtualAlloc = VirtualAlloc;
 	params->_LoadLibraryA = LoadLibraryA;
@@ -1181,7 +1176,7 @@ struct _ztap_cmdr_pkg_t {
 	struct _cmdr_params params;
 };
 
-int ztap_cmdr_init(HANDLE proc_handle, struct ztap_handle_t* handle) {
+int ztap_cmdr_init(HANDLE proc_handle, struct ztap_handle_t** handle) {
 	HANDLE cmdr_write_handle;
 	HANDLE msg_read_handle;
 	BOOL piped;
@@ -1251,25 +1246,23 @@ int ztap_cmdr_init(HANDLE proc_handle, struct ztap_handle_t* handle) {
 		&remote_pkg->params, 0, 0);
 	if (thread_handle == NULL) return -8;
 
-	handle->pipe_read = cmdr_read_handle;
-	handle->pipe_write = cmdr_write_handle;
-	
-	free(pkg);
+	(*handle)->pipe_read = cmdr_read_handle;
+	(*handle)->pipe_write = cmdr_write_handle;
 	return 0;
 }
 
 BOOL ztap_cmdr_wpm(struct ztap_handle_t* handle,
-				   void* base_address,
-				   void* buffer,
-				   size_t size,
-				   size_t* out_size) {
+	void* base_address,
+	void* buffer,
+	size_t size,
+	size_t* out_size) {
 	struct _cmdr_msg_t msg;
 	struct _cmdr_wpm_params_t* params;
 
 	memset(&msg, 0, sizeof(msg));
 	msg.msg_enum = cmdr_wpm;
 	params = &msg.params._cmdr_wpm_params;
-	
+
 	params->dest = base_address;
 	params->buff_len = size;
 
@@ -1290,7 +1283,7 @@ BOOL ztap_cmdr_wpm(struct ztap_handle_t* handle,
 		reading_head += sent;
 	}
 	*out_size = total_sent;
-	
+
 	size_t res_recvd;
 	struct _cmdr_res_t res;
 	ReadFile(handle->pipe_read, &res, sizeof(res),
@@ -1300,10 +1293,10 @@ BOOL ztap_cmdr_wpm(struct ztap_handle_t* handle,
 }
 
 BOOL ztap_cmdr_rpm(struct ztap_handle_t* handle,
-				   void* base_address,
-				   void* buffer,
-				   size_t size,
-				   size_t* out_size) {
+	void* base_address,
+	void* buffer,
+	size_t size,
+	size_t* out_size) {
 	struct _cmdr_msg_t msg;
 	struct _cmdr_rpm_params_t* params;
 
@@ -1341,10 +1334,10 @@ BOOL ztap_cmdr_rpm(struct ztap_handle_t* handle,
 }
 
 LPVOID ztap_cmdr_va(struct ztap_handle_t* handle,
-				  void* address,
-			 	  size_t size,
-				  uint32_t allocation_type,
-				  uint32_t  protect) {
+	void* address,
+	size_t size,
+	uint32_t allocation_type,
+	uint32_t  protect) {
 	struct _cmdr_msg_t msg;
 	struct _cmdr_va_params_t* params;
 
@@ -1363,20 +1356,20 @@ LPVOID ztap_cmdr_va(struct ztap_handle_t* handle,
 
 	WriteFile(handle->pipe_write, &msg,
 		sizeof(msg), &sent, (void*)0);
-	
+
 	size_t res_recvd;
 	struct _cmdr_res_t res;
 	ReadFile(handle->pipe_read, &res, sizeof(res),
 		&res_recvd, (void*)0);
-	
+
 	return res.val.ptr;
 }
 
 BOOL ztap_cmdr_vp(struct ztap_handle_t* handle,
-				  void* address,
-				  size_t size,
-				  uint32_t new_protect,
-				  uint32_t* old_protect) {
+	void* address,
+	size_t size,
+	uint32_t new_protect,
+	uint32_t* old_protect) {
 	struct _cmdr_msg_t msg;
 	struct _cmdr_vp_params_t* params;
 
@@ -1411,9 +1404,9 @@ BOOL ztap_cmdr_vp(struct ztap_handle_t* handle,
 }
 
 BOOL ztap_cmdr_vf(struct ztap_handle_t* handle,
-				  void* address,
-				  size_t size,
-				  uint32_t free_type) {
+	void* address,
+	size_t size,
+	uint32_t free_type) {
 	struct _cmdr_msg_t msg;
 	struct _cmdr_vf_params_t* params;
 
@@ -1441,7 +1434,7 @@ BOOL ztap_cmdr_vf(struct ztap_handle_t* handle,
 }
 
 HMODULE ztap_cmdr_lla(struct ztap_handle_t* handle,
-					  char* lib_name) {
+	char* lib_name) {
 	struct _cmdr_msg_t msg;
 	struct _cmdr_lla_params_t* params;
 
@@ -1467,8 +1460,8 @@ HMODULE ztap_cmdr_lla(struct ztap_handle_t* handle,
 }
 
 FARPROC ztap_cmdr_gpa(struct ztap_handle_t* handle,
-				      HMODULE module_handle,
-				      char* name) {
+	HMODULE module_handle,
+	char* name) {
 	struct _cmdr_msg_t msg;
 	struct _cmdr_gpa_params_t* params;
 
@@ -1495,12 +1488,12 @@ FARPROC ztap_cmdr_gpa(struct ztap_handle_t* handle,
 }
 
 void ztap_cmdr_ct(struct ztap_handle_t* handle,
-				 SECURITY_ATTRIBUTES* thread_attributes,
-				 size_t stack_size,
-				 void* start_address,
-				 void* parameter,
-				 DWORD creation_flags,
-				 DWORD* thread_id) {
+	SECURITY_ATTRIBUTES* thread_attributes,
+	size_t stack_size,
+	void* start_address,
+	void* parameter,
+	DWORD creation_flags,
+	DWORD* thread_id) {
 	struct _cmdr_msg_t msg;
 	struct _cmdr_ct_params_t* params;
 
@@ -1530,10 +1523,10 @@ void ztap_cmdr_ct(struct ztap_handle_t* handle,
 }
 
 int ztap_cmdr_ncc(struct ztap_handle_t* handle,
-				  char* start,
-				  uint64_t size,
-				  uint64_t range,
-				  char** code_cave_ptr) {
+	char* start,
+	uint64_t size,
+	uint64_t range,
+	char** code_cave_ptr) {
 	struct _cmdr_msg_t msg;
 	struct _cmdr_ncc_params_t* params;
 
@@ -1558,16 +1551,16 @@ int ztap_cmdr_ncc(struct ztap_handle_t* handle,
 		&res_recvd, (void*)0);
 
 	if (res.res_type == error_res_t) return -1;
-	
+
 	*code_cave_ptr = res.val.ptr;
 	return 0;
 }
 
 int ztap_cmdr_fcc(struct ztap_handle_t* handle,
-				  char* start,
-				  uint64_t size,
-				  char* end,
-				  char** code_cave_ptr) {
+	char* start,
+	uint64_t size,
+	char* end,
+	char** code_cave_ptr) {
 	struct _cmdr_msg_t msg;
 	struct _cmdr_fcc_params_t* params;
 
@@ -1597,9 +1590,9 @@ int ztap_cmdr_fcc(struct ztap_handle_t* handle,
 	return 0;
 }
 
-int ztap_cmdr_mi(struct ztap_handle_t* handle, 
-				 char* file_loc,
-				 char** image_base) {
+int ztap_cmdr_mi(struct ztap_handle_t* handle,
+	char* file_loc,
+	char** image_base) {
 	struct _cmdr_msg_t msg;
 	struct _cmdr_mi_params_t* params;
 
@@ -1622,7 +1615,7 @@ int ztap_cmdr_mi(struct ztap_handle_t* handle,
 		&res_recvd, (void*)0);
 
 	if (res.res_type == error_res_t) return -1;
-	
+
 	*image_base = res.val.ptr;
 	return TRUE;
 }
